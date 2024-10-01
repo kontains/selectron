@@ -10,7 +10,7 @@ Electrico appears to be a desktop application built using Electron with a Rust b
 
 ## Overview
 
-Electrico is a demo application that showcases version information and provides an interface for interacting with system-level operations.
+Electrico includes a demo application (see Resources) that showcases version information and provides an interface for interacting with system-level operations.
 The application uses Electron for the frontend and Rust for the backend, leveraging Webview2 for rendering web content.
 
 ## Frontend (JavaScript/HTML/CSS)
