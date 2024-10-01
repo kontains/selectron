@@ -28,13 +28,13 @@ The Rust backend is structured as follows:
 - **electron.rs**: Contains code related to Electron integration, possibly including initialization and event handling.
 - **menu.rs**: Manages the application's menu bar, allowing users to interact with different features.
 - **mod.rs**: The root module for the `electron` crate, which likely includes reexports of other modules.
-- **types.rs**: Defines data types used in the Electron backend.
+- **types.rs**: Define data types used in the Electron backend.
 
 The Rust backend also includes a separate directory for handling Node.js functionality:
 
 - **node.rs**: Contains code related to Node.js integration.
 - **mod.rs**: The root module for the `node` crate, which likely includes reexports of other modules.
-- **types.rs**: Defines data types used in the Node.js backend.
+- **types.rs**: Define data types used in the Node.js backend.
 
 ## Main Application Logic
 
@@ -43,6 +43,7 @@ The Rust backend also includes a separate directory for handling Node.js functio
 - **frontend.rs**: Handles the frontend logic, likely interacting with the Electron and Node.js backends.
 - **ipcchannel.rs**: Manages IPC communication between the main process and renderer processes.
 - **main.rs**: The entry point for the Rust application, initializing the Electron and Node.js environments.
+- **types.rs**: Define data types for the main app logic.
 
 ## Additional Files
 
