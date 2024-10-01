@@ -1,0 +1,4 @@
+packages:
+  - 'Resources/*'
+  - 'src/js/backend/*'
+  - 'src/js/frontend/*'
