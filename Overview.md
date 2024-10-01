@@ -58,3 +58,55 @@ The application showcases version information and provides an interface for inte
 The Rust backend handles the core logic, while the JavaScript frontend manages user interactions and IPC communication.
 This setup allows for a powerful combination of web technologies and native Rust capabilities, providing a robust platform for building cross-platform desktop applications.
 
+<hr>
+
+<p align="center">
+	<br><span> Tree:</span><br>
+</p>
+
+<p align="left"><span><br>
+└── ./
+    ├── Resources
+    │   ├── app.html
+    │   ├── main.js
+    │   ├── package.json
+    │   ├── preload.js
+    │   ├── styles.css
+    │   └── terminal.js
+    ├── src
+    │   ├── electron
+    │   │   ├── electron.rs
+    │   │   ├── menu.rs
+    │   │   ├── mod.rs
+    │   │   └── types.rs
+    │   ├── js
+    │   │   ├── backend
+    │   │   │   ├── backend.html
+    │   │   │   ├── electrico.js
+    │   │   │   ├── electron.js
+    │   │   │   ├── node.js
+    │   │   │   ├── package-lock.json
+    │   │   │   └── package.json
+    │   │   ├── frontend
+    │   │   │   ├── electrico.js
+    │   │   │   ├── package-lock.json
+    │   │   │   └── package.json
+    │   │   └── shared
+    │   │       ├── require.js
+    │   │       └── shared.js
+    │   ├── node
+    │   │   ├── mod.rs
+    │   │   ├── node.rs
+    │   │   └── types.rs
+    │   ├── backend.rs
+    │   ├── common.rs
+    │   ├── frontend.rs
+    │   ├── ipcchannel.rs
+    │   ├── main.rs
+    │   └── types.rs
+    ├── .gitignore
+    ├── Cargo.toml
+    ├── README.md
+    └── ResourcesLink.json
+</span>
+</p>
