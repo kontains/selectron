@@ -25,6 +25,7 @@ As for now some basic Electron and Node APIs are - partly - implemented:
 
 The Test App is configured to start up by default when Electrico is started from the project folder
 
+	pnpm install --recursive
 	cargo run
 
 When started in debug mode, it opens a browser dev tools window for the 'node backend' where debugging takes place. Also all GUI windows are shown with dev tools.
