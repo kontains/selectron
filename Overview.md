@@ -66,6 +66,7 @@ This setup allows for a powerful combination of web technologies and native Rust
 </p>
 
 <p align="left"><span><pre>
+
 ```bash
 ./
 ├── Resources
@@ -111,6 +112,7 @@ This setup allows for a powerful combination of web technologies and native Rust
 ├── README.md
 └── ResourcesLink.json
 ```
+
 </pre>
 </span>
 </p>
