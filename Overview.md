@@ -20,6 +20,8 @@ The application uses Electron for the frontend and Rust for the backend, leverag
 - **preload.js**: This script is executed in the context of the web page before the renderer process starts. It uses `contextBridge` to expose specific functions from the main process to the renderer process, enhancing security by limiting direct access to the main process's functionality.
 - **styles.css**: Stylesheet for customizing the appearance of the application.
 - **terminal.js**: A JavaScript file that likely handles terminal-like interactions within the application.
+##### &
+- **package.json**: for installing Electron, thou [it's not needed by Electrico.](https://github.com/thomastschurtschenthaler/electrico/issues/5#issuecomment-2388206145)
 
 ## Backend (Rust)
 
