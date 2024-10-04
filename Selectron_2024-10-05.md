@@ -9,57 +9,51 @@ Selectron uses Webviews running an Electron App-GUI frontend, and backend Node A
 
 ## Tree
 
-<p align="center">
-	<br><span> Tree:</span><br>
-</p>
-
 <p align="left"><span><pre>
 
-```bash
 ./
 ├── Resources
-│   ├── app.html
-│   ├── main.js
-│   ├── package.json
-│   ├── preload.js
-│   ├── styles.css
-│   └── terminal.js
+│   ├── [app.html](#resourcesapphtml)
+│   ├── [main.js](#resourcesmainjs)
+│   ├── [package.json](#resourcespackage.json)
+│   ├── [preload.js](#resourcespreload.js)
+│   ├── [styles.css](#resourcesstylecss)
+│   └── [terminal.js](#resourcesterminaljs)
 ├── src
 │   ├── electron
-│   │   ├── electron.rs
-│   │   ├── menu.rs
-│   │   ├── mod.rs
-│   │   └── types.rs
+│   │   ├── [electron.rs](#srcelectronelectronrs)
+│   │   ├── [menu.rs](#srcelectronmenurs)
+│   │   ├── [mod.rs](#srcelectronmodrs)
+│   │   └── [types.rs](#srcelectrontypesrs)
 │   ├── js
 │   │   ├── backend
-│   │   │   ├── backend.html
-│   │   │   ├── electrico.js
-│   │   │   ├── electron.js
-│   │   │   ├── node.js
-│   │   │   ├── package-lock.json
-│   │   │   └── package.json
+│   │   │   ├── [backend.html](#srcjsbackendbackendhtml)
+│   │   │   ├── [electrico.js](#srcjsbackendelectricojs)
+│   │   │   ├── [electron.js](#srcjsbackendelectronjs)
+│   │   │   ├── [node.js](#srcjsbackendnodejs)
+│   │   │   ├── [package-lock.json](#srcjsbackendpackage-lockjson)
+│   │   │   └── [package.json](#srcjsbackendpackagejson)
 │   │   ├── frontend
-│   │   │   ├── electrico.js
-│   │   │   ├── package-lock.json
-│   │   │   └── package.json
+│   │   │   ├── [electrico.js](#srcjsfrontendelectricojs)
+│   │   │   ├── [package-lock.json](#srcjsfrontendpackage-lockjson)
+│   │   │   └── [package.json](#srcjsfrontendpackagejson)
 │   │   └── shared
-│   │       ├── require.js
-│   │       └── shared.js
+│   │       ├── [require.js](#srcjssharedrequirejs)
+│   │       └── [shared.js](#srcjssharedsharedjs)
 │   ├── node
-│   │   ├── mod.rs
-│   │   ├── node.rs
-│   │   └── types.rs
-│   ├── backend.rs
-│   ├── common.rs
-│   ├── frontend.rs
-│   ├── ipcchannel.rs
-│   ├── main.rs
-│   └── types.rs
-├── .gitignore
-├── Cargo.toml
-├── README.md
-└── ResourcesLink.json
-```
+│   │   ├── [mod.rs](#srcnodemodrs)
+│   │   ├── [node.rs](#srcnodenoders)
+│   │   └── [types.rs](#srcnodetypesrs)
+│   ├── [backend.rs](#srcbackendrs)
+│   ├── [common.rs](#srcmodrs)
+│   ├── [frontend.rs](#srccommonrs)
+│   ├── [ipcchannel.rs](#srcipcchannelrs)
+│   ├── [main.rs](#srcmainrs)
+│   └── [types.rs](#srctypesrs)
+├── [.gitignore](#gitignore)
+├── [Cargo.toml](#Cargotoml)
+├── [README.md](#READMEmd)
+└── [ResourcesLink.json](#ResourcesLinkjson)
 
 </pre>
 </span>
