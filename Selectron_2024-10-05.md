@@ -15,8 +15,8 @@ Selectron uses Webviews running an Electron App-GUI frontend, and backend Node A
 ├── Resources
 │   ├── [app.html](#resourcesapphtml)
 │   ├── [main.js](#resourcesmainjs)
-│   ├── [package.json](#resourcespackage.json)
-│   ├── [preload.js](#resourcespreload.js)
+│   ├── [package.json](#resourcespackagejson)
+│   ├── [preload.js](#resourcespreloadjs)
 │   ├── [styles.css](#resourcesstylescss)
 │   └── [terminal.js](#resourcesterminaljs)
 ├── src
@@ -164,11 +164,11 @@ The application uses Electron for the frontend and Rust for the backend, leverag
 
 - **[app.html](#resourcesapphtml)**: The main HTML file that serves as the entry point for the application.
 - **[main.js](#resourcesmainjs)**: A JavaScript file that handles the initialization of the Electron application and sets up the IPC communication.
-- **[preload.js](#resourcespreload.js)**: This script is executed in the context of the web page before the renderer process starts. It uses `contextBridge` to expose specific functions from the main process to the renderer process, enhancing security by limiting direct access to the main process's functionality.
+- **[preload.js](#resourcespreloadjs)**: This script is executed in the context of the web page before the renderer process starts. It uses `contextBridge` to expose specific functions from the main process to the renderer process, enhancing security by limiting direct access to the main process's functionality.
 - **[styles.css](#resourcesstylescss)**: Stylesheet for customizing the appearance of the application.
 - **[terminal.js](#resourcesterminaljs)**: A JavaScript file that likely handles terminal-like interactions within the application.
 ##### &
-- **[package.json](#resourcespackage.json)**: for installing Electron, thou [it's not needed by Electrico.](https://github.com/thomastschurtschenthaler/electrico/issues/5#issuecomment-2388206145)
+- **[package.json](#resourcespackagejson)**: for installing Electron, thou [it's not needed by Electrico.](https://github.com/thomastschurtschenthaler/electrico/issues/5#issuecomment-2388206145)
 
 ## Backend (Rust)
 
@@ -196,7 +196,7 @@ The Rust backend also includes a separate directory for handling Node.js functio
 
 ## Additional Files
 
-- **[package.json](#resourcespackage.json)**: Contains metadata about the sample project and dependencies.
+- **[package.json](#resourcespackagejson)**: Contains metadata about the sample project and dependencies.
 - **[Cargo.toml](#Cargotoml)**: Defines the project's build configuration and dependencies.
 - **[README.md](#READMEmd)**: Provides documentation and instructions for setting up and running the project.
 - **[ResourcesLink.json](#ResourcesLinkjson)**: Likely contains configuration or linking information for the application.
