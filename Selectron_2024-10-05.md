@@ -162,44 +162,44 @@ The application uses Electron for the frontend and Rust for the backend, leverag
 
 ## Frontend (JavaScript/HTML/CSS)
 
-- **[app.html](#resourcesapphtml)**  The main HTML file that serves as the entry point for the application.
-- **[main.js](#resourcesmainjs)**  A JavaScript file that handles the initialization of the Electron application and sets up the IPC communication.
-- **[preload.js](#resourcespreloadjs)**  This script is executed in the context of the web page before the renderer process starts. It uses `contextBridge` to expose specific functions from the main process to the renderer process, enhancing security by limiting direct access to the main process's functionality.
-- **[styles.css](#resourcesstylescss)**  Stylesheet for customizing the appearance of the application.
-- **[terminal.js](#resourcesterminaljs)**  A JavaScript file that likely handles terminal-like interactions within the application.
+- **[app.html](#resourcesapphtml)** - The main HTML file that serves as the entry point for the application.
+- **[main.js](#resourcesmainjs)** - A JavaScript file that handles the initialization of the Electron application and sets up the IPC communication.
+- **[preload.js](#resourcespreloadjs)** - This script is executed in the context of the web page before the renderer process starts. It uses `contextBridge` to expose specific functions from the main process to the renderer process, enhancing security by limiting direct access to the main process's functionality.
+- **[styles.css](#resourcesstylescss)** - Stylesheet for customizing the appearance of the application.
+- **[terminal.js](#resourcesterminaljs)** - A JavaScript file that likely handles terminal-like interactions within the application.
 ##### &
-- **[package.json](#resourcespackagejson)**  for installing Electron, thou [it's not needed by Electrico.](https://github.com/thomastschurtschenthaler/electrico/issues/5#issuecomment-2388206145)
+- **[package.json](#resourcespackagejson)** - for installing Electron, thou [it's not needed by Electrico.](https://github.com/thomastschurtschenthaler/electrico/issues/5#issuecomment-2388206145)
 
 ## Backend (Rust)
 
 The Rust backend is structured as follows:
 
-- **[electron.rs](#srcelectronelectronrs)**  Contains code related to Electron integration, possibly including initialization and event handling.
-- **[menu.rs](#srcelectronmenurs)**  Manages the application's menu bar, allowing users to interact with different features.
-- **[mod.rs](#srcelectronmodrs)**  The root module for the `electron` crate, which likely includes reexports of other modules.
-- **[types.rs](#srcelectrontypesrs)**  Define data types used in the Electron backend.
+- **[electron.rs](#srcelectronelectronrs)** - Contains code related to Electron integration, possibly including initialization and event handling.
+- **[menu.rs](#srcelectronmenurs)** - Manages the application's menu bar, allowing users to interact with different features.
+- **[mod.rs](#srcelectronmodrs)** - The root module for the `electron` crate, which likely includes reexports of other modules.
+- **[types.rs](#srcelectrontypesrs)** - Define data types used in the Electron backend.
 
 The Rust backend also includes a separate directory for handling Node.js functionality:
 
-- **[node.rs](#srcnodenoders)**  Contains code related to Node.js integration.
-- **[mod.rs](#srcnodemodrs)**  The root module for the `node` crate, which likely includes reexports of other modules.
-- **[types.rs](#srcnodetypesrs)**  Define data types used in the Node.js backend.
+- **[node.rs](#srcnodenoders)** - Contains code related to Node.js integration.
+- **[mod.rs](#srcnodemodrs)** - The root module for the `node` crate, which likely includes reexports of other modules.
+- **[types.rs](#srcnodetypesrs)** - Define data types used in the Node.js backend.
 
 ## Main Application Logic
 
-- **[backend.rs](#srcbackendrs)**  Manages the backend logic, possibly including interactions with external services or system-level operations.
-- **[common.rs](#srccommonrs)**  Contains common code that can be reused across different parts of the application.
-- **[frontend.rs](#srcfrontendrs)**  Handles the frontend logic, likely interacting with the Electron and Node.js backends.
-- **[ipcchannel.rs](#srcipcchannelrs)**  Manages IPC communication between the main process and renderer processes.
-- **[main.rs](#srcmainrs)**  The entry point for the Rust application, initializing the Electron and Node.js environments.
-- **[types.rs](#srctypesrs)**  Define data types for the main app logic.
+- **[backend.rs](#srcbackendrs)** - Manages the backend logic, possibly including interactions with external services or system-level operations.
+- **[common.rs](#srccommonrs)** - Contains common code that can be reused across different parts of the application.
+- **[frontend.rs](#srcfrontendrs)** - Handles the frontend logic, likely interacting with the Electron and Node.js backends.
+- **[ipcchannel.rs](#srcipcchannelrs)** - Manages IPC communication between the main process and renderer processes.
+- **[main.rs](#srcmainrs)** - The entry point for the Rust application, initializing the Electron and Node.js environments.
+- **[types.rs](#srctypesrs)** - Define data types for the main app logic.
 
 ## Additional Files
 
-- **[package.json](#resourcespackagejson)**  Contains metadata about the sample project and dependencies.
-- **[Cargo.toml](#Cargotoml)**  Defines the project's build configuration and dependencies.
-- **[README.md](#READMEmd)**  Provides documentation and instructions for setting up and running the project.
-- **[ResourcesLink.json](#ResourcesLinkjson)**  Likely contains configuration or linking information for the application.
+- **[package.json](#resourcespackagejson)** - Contains metadata about the sample project and dependencies.
+- **[Cargo.toml](#Cargotoml)** - Defines the project's build configuration and dependencies.
+- **[README.md](#READMEmd)** - Provides documentation and instructions for setting up and running the project.
+- **[ResourcesLink.json](#ResourcesLinkjson)** - Likely contains configuration or linking information for the application.
 
 ## Summary
 
