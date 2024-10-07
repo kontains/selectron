@@ -6071,9 +6071,9 @@ pub enum ElectricoEvents {
 </pre></span></p>
 
 <br><br>
-<p align="center"><span><pre>
+<p align="center"><span>
 
 │── [back to top](#---back) ──│
 
-</pre></span></p>
+</span></p>
 <br><br>
