@@ -4680,6 +4680,9 @@ fn main() -> wry::Result<()> {
 /src/node/ipc.rs:
 -----------------------
 
+<p align="left"><span><pre>
+
+```rust
 use std::{fs, path::Path, sync::mpsc::{self, Receiver, Sender}, time::Duration};
 
 use interprocess::local_socket::{ToFsName, traits::tokio::{Listener, Stream}, GenericFilePath, ListenerOptions};
@@ -4869,7 +4872,7 @@ fn ipc_connect(id:&String, c:interprocess::local_socket::tokio::Stream,
         trace!("NETConnection read end {}", r_id);
     });
 }
-
+</pre></span></p>
 
 -----------------------
 
@@ -5465,6 +5468,9 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
 /src/node/process.rs:
 -----------------------
 
+<p align="left"><span><pre>
+
+```rust
 use std::{process::{Command, Stdio}, sync::mpsc::{self, Sender, Receiver}, thread};
 
 use log::{error, trace};
@@ -5593,7 +5599,7 @@ pub fn child_process_spawn(
         }
     }
 }
-
+</pre></span></p>
 
 -----------------------
 
