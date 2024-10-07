@@ -41,6 +41,7 @@ Selectron uses Webviews running an Electron App-GUI frontend, and backend Node A
 │   │       ├── [require.js](#srcjssharedrequirejs)
 │   │       └── [shared.js](#srcjssharedsharedjs)
 │   ├── node
+│   │   ├── [common.rs](#srcnodecommonrs)
 │   │   ├── [ipc.rs](#srcnodeipcrs)
 │   │   ├── [mod.rs](#srcnodemodrs)
 │   │   ├── [node.rs](#srcnodenoders)
@@ -4669,6 +4670,28 @@ fn main() -> wry::Result<()> {
       _ => (),
     }
   });
+}
+```
+
+</pre></span></p>
+
+
+-----------------------
+
+/src/node/common.rs:
+-----------------------
+
+<p align="left"><span><pre>
+
+```rust
+use tao::event_loop::EventLoopProxy;
+use std::sync::mpsc::Sender;
+
+use crate::types::{BackendCommand, ElectricoEvents};
+
+pub fn send_command(proxy:&EventLoopProxy<ElectricoEvents>, command_sender:&Sender<BackendCommand>, command:BackendCommand) {
+    let _ = command_sender.send(command);
+    let _ = proxy.send_event(ElectricoEvents::Noop);
 }
 ```
 
