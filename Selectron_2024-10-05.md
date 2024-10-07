@@ -41,8 +41,10 @@ Selectron uses Webviews running an Electron App-GUI frontend, and backend Node A
 │   │       ├── [require.js](#srcjssharedrequirejs)
 │   │       └── [shared.js](#srcjssharedsharedjs)
 │   ├── node
+│   │   ├── [ipc.rs](#srcnodeipcrs)
 │   │   ├── [mod.rs](#srcnodemodrs)
 │   │   ├── [node.rs](#srcnodenoders)
+│   │   ├── [process.rs](#srcnodeprocessrs)
 │   │   └── [types.rs](#srcnodetypesrs)
 │   ├── [backend.rs](#srcbackendrs)
 │   ├── [common.rs](#srccommonrs)
@@ -4675,6 +4677,202 @@ fn main() -> wry::Result<()> {
 
 -----------------------
 
+/src/node/ipc.rs:
+-----------------------
+
+use std::{fs, path::Path, sync::mpsc::{self, Receiver, Sender}, time::Duration};
+
+use interprocess::local_socket::{ToFsName, traits::tokio::{Listener, Stream}, GenericFilePath, ListenerOptions};
+use reqwest::StatusCode;
+use tao::event_loop::EventLoopProxy;
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, runtime::Runtime, time::{timeout, sleep}};
+use log::{debug, error, trace};
+use uuid::Uuid;
+use wry::RequestAsyncResponder;
+
+use crate::{common::{respond_404, respond_ok, respond_status, CONTENT_TYPE_TEXT}, node::common::send_command, types::{BackendCommand, ElectricoEvents, NETConnection, NETServer}};
+
+pub fn ipc_server(
+        hook:String, 
+        tokio_runtime:&Runtime, 
+        proxy: EventLoopProxy<ElectricoEvents>, 
+        command_sender: Sender<BackendCommand>,
+        responder:RequestAsyncResponder) {
+    if let Ok(name) = hook.clone().to_fs_name::<GenericFilePath>() {
+        let lo = ListenerOptions::new().name(name);
+        let s_hook = hook.clone();
+        let s_proxy = proxy.clone();
+        let s_command_sender = command_sender.clone();
+
+        #[cfg(unix)] {
+            if Path::new(hook.as_str()).exists() {
+                trace!("removing socket file {}", hook);
+                let _ = fs::remove_file(hook);
+            }
+        }
+        tokio_runtime.spawn(async move {
+           match lo.create_tokio() {
+                Ok(l) => {
+                    let id = Uuid::new_v4().to_string();
+                    let (sender, receiver): (Sender<NETServer>, Receiver<NETServer>) = mpsc::channel();
+                    let _ = send_command(&s_proxy, &s_command_sender, BackendCommand::NETServerStart { id: id.clone(), sender:sender });
+                    respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), id.into_bytes(), responder);
+                    loop {
+                        match timeout(Duration::from_secs(5), l.accept()).await {
+                            Ok(rc) => {
+                                match rc {
+                                    Ok(c) => {
+                                        let id = Uuid::new_v4().to_string();
+                                        trace!("ipc listener connection start id {}", id);
+                                        let (sender, receiver): (Sender<NETConnection>, Receiver<NETConnection>) = mpsc::channel();
+                                        let _ = send_command(&s_proxy, &s_command_sender, BackendCommand::NETServerConnStart { hook: s_hook.clone(), id:id.clone(), sender:sender});
+                                        ipc_connect(&id, c, receiver, proxy.clone(), command_sender.clone());
+                                    },
+                                    Err(e) => {
+                                        error!("ipc listener error {}", e);
+                                    }
+                                }
+                            },
+                            Err(_t) => {
+                                if let Ok(c) = receiver.try_recv() {
+                                    match c {
+                                        NETServer::Close => {
+                                            trace!("NETServer close");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    trace!("NETServer closed");
+                },
+                Err(e) => {
+                    error!("NETCreateServer Error {}", e);
+                    respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("Error: {}", e).to_string().into_bytes(), responder); 
+                }
+            }
+        });
+    } else {
+        respond_404(responder);
+    }
+}
+
+pub fn ipc_connection(
+        hook:String,
+        id:String,
+        tokio_runtime:&Runtime, 
+        proxy: EventLoopProxy<ElectricoEvents>, 
+        command_sender: Sender<BackendCommand>,
+        responder:RequestAsyncResponder) {
+    if let Ok(name) = hook.clone().to_fs_name::<GenericFilePath>() {
+        let c_proxy = proxy.clone();
+        let c_command_sender = command_sender.clone();
+        let (sender, receiver): (Sender<NETConnection>, Receiver<NETConnection>) = mpsc::channel();
+        let _ = send_command(&c_proxy, &c_command_sender, BackendCommand::NETClientConnStart { id:id.clone(), sender:sender});
+        tokio_runtime.spawn(async move {
+            match interprocess::local_socket::tokio::Stream::connect(name).await {
+                Ok(c) => {
+                    respond_ok(responder);
+                    ipc_connect(&id, c, receiver, proxy, command_sender);
+                },
+                Err(e) => {
+                    respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("Error: {}", e).to_string().into_bytes(), responder);
+                }
+            }
+        });
+    } else {
+        respond_404(responder);
+    }
+}
+
+fn ipc_connect(id:&String, c:interprocess::local_socket::tokio::Stream, 
+            receiver:Receiver<NETConnection>,
+            proxy: EventLoopProxy<ElectricoEvents>,
+            command_sender: Sender<BackendCommand>) {
+
+    let r_proxy = proxy.clone();
+    let r_command_sender = command_sender.clone();
+    let r_id=id.clone();
+
+    let (mut reader, mut writer) = c.split();
+    let w_proxy = proxy.clone();
+    let w_command_sender = command_sender.clone();
+    let w_id=id.clone();
+    let (timeout_sender, timeout_receiver): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+                                        
+    tokio::spawn(async move {
+        loop {
+            trace!("NETConnection::write loop {}", w_id);
+            match receiver.recv_timeout(Duration::from_secs(300)) {
+                Ok(r) => {
+                    match r {
+                        NETConnection::Write { data } => {
+                            trace!("NETConnection::Write {}", w_id);
+                            let _ = writer.write(&data.to_vec()).await;
+                        },
+                        NETConnection::Disconnect => {
+                            trace!("NETConnection::Disconnect {}", w_id);
+                            break;
+                        },
+                        NETConnection::EndConnection => {
+                            trace!("NETConnection::EndConnection {}", w_id);
+                            let _ = send_command(&w_proxy, &w_command_sender, BackendCommand::NETConnectionEnd { id:w_id.clone() });
+                        }
+                    }
+                },
+                Err(_e) => {
+                    trace!("NETConnection::receive_timeout {}", w_id);
+                    let _ = timeout_sender.send(true);
+                }
+            }
+        }
+        trace!("NETConnection write end {}", w_id);
+    });
+    let mut buffer:Vec<u8> = vec![0; 1024];
+    tokio::spawn(async move {
+        loop {
+            trace!("NETConnection::read loop {}", r_id);
+            match timeout(Duration::from_secs(300),  reader.read(&mut buffer)).await {
+                Ok(r) => {
+                    match r {
+                        Ok(read) => {
+                            trace!("send data for NETConnection read {}", r_id);
+                            if read>0 {
+                                trace!("send data for NETConnection stream {}", r_id);
+                                let _ = send_command(&r_proxy, &r_command_sender, BackendCommand::NETConnectionData {id:r_id.clone(), data: Some(buffer[0..read].to_vec()) });
+                            } else {
+                                trace!("NETConnection stream end {}", r_id);
+                                sleep(Duration::from_millis(100)).await;
+                                let _ = send_command(&r_proxy, &r_command_sender, BackendCommand::NETConnectionEnd { id:r_id.clone() });
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            error!("ipc NETConnection stream read error {}", e);
+                        }
+                    }
+                },
+                Err(_e) => {
+                    trace!("NETConnection::read_timeout {}", r_id);
+                    if let Ok(_t) = timeout_receiver.try_recv() {
+                        trace!("read and write timeout");
+                        let _ = send_command(&r_proxy, &r_command_sender, BackendCommand::NETConnectionEnd { id:r_id.clone() });
+                        break;
+                    }
+                }
+            }
+            if let Ok(_t) = timeout_receiver.try_recv() {
+                trace!("write timeout, but no read timeout")
+            }
+        }
+        trace!("NETConnection read end {}", r_id);
+    });
+}
+
+
+-----------------------
+
 /src/node/mod.rs:
 -----------------------
 
@@ -5260,6 +5458,141 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
 ```
 
 </pre></span></p>
+
+
+-----------------------
+
+/src/node/process.rs:
+-----------------------
+
+use std::{process::{Command, Stdio}, sync::mpsc::{self, Sender, Receiver}, thread};
+
+use log::{error, trace};
+use reqwest::StatusCode;
+use tao::event_loop::EventLoopProxy;
+use tokio::runtime::Runtime;
+use wry::RequestAsyncResponder;
+use std::io::{Read, Write};
+
+use crate::{backend::Backend, common::{respond_client_error, respond_status, CONTENT_TYPE_TEXT}, node::common::send_command, types::{BackendCommand, ChildProcess, ElectricoEvents}};
+
+pub fn child_process_spawn(
+        cmd:String, 
+        args:Option<Vec<String>>,
+        backend:&mut Backend,
+        tokio_runtime:&Runtime,
+        proxy: EventLoopProxy<ElectricoEvents>, 
+        command_sender: Sender<BackendCommand>,
+        responder:RequestAsyncResponder) {
+    let mut pargs:Vec<String> = Vec::new();
+    if let Some(args) = args {
+        pargs = args;
+    }
+    match Command::new(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .args(pargs).spawn() {
+        Ok(mut child) => {
+            let (sender, receiver): (Sender<ChildProcess>, Receiver<ChildProcess>) = mpsc::channel();
+            backend.child_process_start(child.id().to_string(), sender);
+            respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), child.id().to_string().into_bytes(), responder); 
+            tokio_runtime.spawn(
+                async move {
+                    let mut stdout;
+                    let mut stderr;
+                    let mut stdin;
+                    match child.stdout.take() {
+                        Some(chstdout) => {
+                            stdout=chstdout;
+                        }, 
+                        None => {
+                            error!("ChildProcessSpawn stdout not available");
+                            let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
+                            return;
+                        }
+                    }
+                    match child.stderr.take() {
+                        Some(chstderr) => {
+                            stderr=chstderr;
+                        }, 
+                        None => {
+                            error!("ChildProcessSpawn stderr not available");
+                            let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
+                            return;
+                        }
+                    }
+                    match child.stdin.take() {
+                        Some(chstdin) => {
+                            stdin=chstdin;
+                        }, 
+                        None => {
+                            error!("ChildProcessSpawn stdid not available");
+                            let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
+                            return;
+                        }
+                    }
+                    let mut exit_code:Option<i32> = None;
+                    loop {
+                        if let Ok(cp) = receiver.try_recv() {
+                            match cp {
+                                ChildProcess::StdinWrite { data } => {
+                                    trace!("writing stdin {}", data.len());
+                                    let _ = stdin.write(data.as_slice());
+                                },
+                                ChildProcess::Disconnect => {
+                                    trace!("disconnect");
+                                    break;
+                                }
+                            }
+                        }
+                        let mut stdinread:usize=0;
+                        let mut stderrread:usize=0;
+                        let stdout_buf:&mut [u8] = &mut [0; 1024];
+                        if let Ok(read) = stdout.read(stdout_buf) {
+                            trace!("stdout read {}", read);
+                            stdinread = read;
+                            if read>0 {
+                                let data:Vec<u8> = stdout_buf[0..read].to_vec();
+                                let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessCallback { pid:child.id().to_string(), stream:"stdout".to_string(), data:Some(data) });
+                            }
+                        }
+                        let stderr_buf:&mut [u8] = &mut [0; 1024];
+                        if let Ok(read) = stderr.read(stderr_buf) {
+                            trace!("stderr read {}", read);
+                            stderrread = read;
+                            if read>0 {
+                                let data:Vec<u8> = stderr_buf[0..read].to_vec();
+                                let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessCallback { pid:child.id().to_string(), stream:"stderr".to_string(), data:Some(data) });
+                            }
+                        }
+                        match child.try_wait() {
+                            Ok(event) => {
+                                if let Some(event) = event {
+                                    exit_code = event.code();
+                                }
+                            }
+                            Err(e) => {
+                                error!("ChildProcessSpawn try_wait error: {}", e);
+                                break;
+                            }
+                        }
+                        if let Some(_exit_code) = exit_code {
+                            if stdinread==0 && stderrread==0 {
+                                break;
+                            }
+                        }
+                        thread::yield_now();
+                    }
+                    let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:exit_code});
+                }
+            );         
+        },
+        Err(e) => {
+            respond_client_error(format!("Error: {}", e), responder);
+        }
+    }
+}
 
 
 -----------------------
