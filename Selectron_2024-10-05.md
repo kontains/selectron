@@ -1,6 +1,6 @@
 
 <p align="center">
-	<br><span>(Selectron-2024-10-05.md)</span><br>
+	<br><span>(Selectron source - updated: 2024-10-08)</span><br>
 </p>
 
 ## Overview
@@ -565,9 +565,10 @@ use substring::Substring;
 use log::{debug, error, trace};
 use include_dir::{include_dir, Dir};
 use tao::{dpi::PhysicalSize, event_loop::{EventLoop, EventLoopProxy}, window::{Window, WindowBuilder}};
+use urlencoding::decode;
 use wry::{http::Request, RequestAsyncResponder, WebView, WebViewBuilder};
 use serde_json::Error;
-use crate::{common::{append_js_scripts, build_file_map, escape, handle_file_request, is_module_request}, ipcchannel::IPCMsg, types::{BackendCommand, ChildProcess}};
+use crate::{common::{append_js_scripts, build_file_map, escape, handle_file_request, is_module_request, respond_404, DataQueue}, ipcchannel::IPCMsg, types::{BackendCommand, ChildProcess, NETConnection, NETServer}};
 use crate::types::{Package, ElectricoEvents, Command};
 
 pub struct Backend {
@@ -577,7 +578,10 @@ pub struct Backend {
     command_receiver:Receiver<BackendCommand>,
     child_process:HashMap<String, Sender<ChildProcess>>,
     fs_watcher:HashMap<String, RecommendedWatcher>,
-    fs_files:HashMap<i64, File>
+    fs_files:HashMap<i64, File>,
+    net_server:HashMap<String, Sender<NETServer>>,
+    net_connections:HashMap<String, Sender<NETConnection>>,
+    data_queue:DataQueue
 }
 
 impl Backend {
@@ -586,9 +590,9 @@ impl Backend {
 
         let mut backendjs:String = String::new();
         const JS_DIR_SHARED: Dir = include_dir!("src/js/shared");
-        backendjs = append_js_scripts(backendjs, JS_DIR_SHARED);
+        backendjs = append_js_scripts(backendjs, JS_DIR_SHARED, Some(".js"));
         const JS_DIR_BACKEND: Dir = include_dir!("src/js/backend");
-        backendjs = append_js_scripts(backendjs, JS_DIR_BACKEND);
+        backendjs = append_js_scripts(backendjs, JS_DIR_BACKEND, Some("electrico.js"));
         let backend_js_files = build_file_map(&JS_DIR_BACKEND);
         let init_script = backendjs+"\nwindow.__electrico.loadMain('"+package.main.to_string().as_str()+"');";
         
@@ -612,23 +616,44 @@ impl Backend {
             .unwrap();
         
         let cmd_handler = move |request: Request<Vec<u8>>, responder:RequestAsyncResponder| {
-            trace!("backend cmd request {} {}", request.uri().path().to_string(), request.body().len());
-            let msgr =  String::from_utf8(request.body().to_vec());
-            match msgr {
-                Ok(msg) => {
-                  trace!("backend cmd request body {}", msg.as_str());
-                  let commandr:Result<Command, Error> = serde_json::from_str(msg.as_str());
-                  match commandr {
-                    Ok (command) => {
-                      let _ = proxy.send_event(ElectricoEvents::ExecuteCommand{command, responder});
-                    }
+            let path = request.uri().path().to_string();
+            trace!("backend cmd request {} {}", path, request.body().len());
+            let cmdmsg:String;
+            let data_blob:Option<Vec<u8>>;
+            if let Some(queryenc) = request.uri().query() {
+                if let Ok(query) = decode(queryenc) {
+                    cmdmsg=query.to_string();
+                    data_blob = Some(request.body().to_vec());
+                } else {
+                    error!("url decoder error");
+                    respond_404(responder);
+                    return;
+                }
+            } else {
+                let msgr =  String::from_utf8(request.body().to_vec());
+                match msgr {
+                    Ok(msg) => {
+                        trace!("backend cmd request body {}", msg.as_str());
+                        cmdmsg=msg;
+                        data_blob=None;
+                    },
                     Err(e) => {
-                      error!("json serialize error {}", e.to_string());
+                        error!("utf8 error {}", e);
+                        respond_404(responder);
+                        return;
                     }
-                  }
-                },
+                }
+            }
+            
+            let commandr:Result<Command, Error> = serde_json::from_str(cmdmsg.as_str());
+            match commandr {
+                Ok (command) => {
+                    let _ = proxy.send_event(ElectricoEvents::ExecuteCommand{command, responder, data_blob});
+                }
                 Err(e) => {
-                  error!("utf8 error {}", e.to_string());
+                    error!("json serialize error {}", e.to_string());
+                    respond_404(responder);
+                    return;
                 }
             }
         };
@@ -687,7 +712,10 @@ impl Backend {
             command_receiver,
             child_process: HashMap::new(),
             fs_watcher: HashMap::new(),
-            fs_files: HashMap::new()
+            fs_files: HashMap::new(),
+            net_server: HashMap::new(),
+            net_connections: HashMap::new(),
+            data_queue: DataQueue::new()
         }
     }
     pub fn command_callback(&mut self, command:String, message:String) {
@@ -723,28 +751,26 @@ impl Backend {
     pub fn dom_content_loaded(&mut self, id:&String) {
         let _ = self.webview.evaluate_script(format!("window.__electrico.domContentLoaded('{}');", id).as_str());
     }
-    pub fn child_process_callback(&mut self, pid:String, stream:String, data:Vec<u8>) {
+    pub fn child_process_callback(&mut self, pid:String, stream:String, data:Option<Vec<u8>>) {
         if stream=="stdin" {
             if let Some(sender) = self.child_process.get(&pid) {
-              trace!("ChildProcessData stdin {}", pid);
-              let _ = sender.send(ChildProcess::StdinWrite {data});
+              trace!("ChildProcessData stdin {} {:?}", pid, data);
+              if let Some(data) = data {
+                let _ = sender.send(ChildProcess::StdinWrite {data});
+              }
             }
         } else {
-            match String::from_utf8(data) {
-                Ok(data) => {
-                    trace!("child_process_callback {} {}", stream, pid);
-                    let retry_sender = self.command_sender.clone();
-                    let _ = self.webview.evaluate_script_with_callback(&format!("window.__electrico.call(()=>{{window.__electrico.child_process.callback.on_{}('{}', '{}');}});", stream, pid, escape(&data).as_str()), move |r| {
-                        if r.len()==0 {
-                            trace!("child_process_callback not OK - resending");
-                            let _ = retry_sender.send(BackendCommand::ChildProcessCallback { pid:pid.clone(), stream:stream.clone(), data:data.as_bytes().into() });
-                        }
-                    });
-                },
-                Err(e) => {
-                    error!("child_process_callback utf error: {}", e);
-                }
+            trace!("child_process_callback {} {}", stream, pid);
+            if let Some(data) = data {
+                self.data_queue.add(&pid, data);
             }
+            let retry_sender = self.command_sender.clone();
+            let _ = self.webview.evaluate_script_with_callback(&format!("window.__electrico.call(()=>{{window.__electrico.child_process.callback.on_{}('{}');}});", stream, pid), move |r| {
+                if r.len()==0 {
+                    trace!("child_process_callback not OK - resending");
+                    let _ = retry_sender.send(BackendCommand::ChildProcessCallback { pid:pid.clone(), stream:stream.clone(), data:None });
+                }
+            });
         }
     }
     pub fn child_process_exit(&mut self, pid:String, exit_code:Option<i32>) {
@@ -812,7 +838,74 @@ impl Backend {
             self.fs_watcher.remove(&wid);
         }
     }
-    
+    pub fn net_server_conn_start(&mut self, hook:String, id:String, sender:Sender<NETConnection>) {
+        let call_script=format!("window.__electrico.net_server.callback.on_start('{}', '{}');", hook, id);
+        self.net_connections.insert(id.clone(), sender.clone());
+        let retry_sender = self.command_sender.clone();
+        let _ = self.webview.evaluate_script_with_callback(&format!("window.__electrico.call(()=>{{{}}});", call_script.as_str()), move |r| {
+            if r.len()==0 {
+                trace!("net_server_conn_start not OK - resending");
+                let _ = retry_sender.send(BackendCommand::NETServerConnStart { hook:hook.clone(), id:id.clone(), sender:sender.clone()});
+            }
+        });
+    }
+    pub fn net_server_close(&mut self, id:String) {
+        if let Some(sender) = self.net_server.get(&id) {
+            let _ = sender.send(NETServer::Close);
+            self.net_server.remove(&id);
+        }
+    }
+    pub fn net_connection_close(&mut self, id:String) {
+        if let Some(sender) = self.net_connections.get(&id) {
+            let _ = sender.send(NETConnection::EndConnection);
+        }
+    }
+    pub fn net_client_conn_start(&mut self, id:String, sender:Sender<NETConnection>) {
+        self.net_connections.insert(id.clone(), sender.clone());
+    }
+    pub fn net_connection_data(&mut self, id:String, data:Option<Vec<u8>>) {
+        if let Some(data) = data {
+            self.data_queue.add(&id, data);
+        }
+        let call_script=format!("window.__electrico.net_server.callback.on_data('{}');", id);
+        let retry_sender = self.command_sender.clone();
+        let _ = self.webview.evaluate_script_with_callback(&format!("window.__electrico.call(()=>{{{}}});", call_script.as_str()), move |r| {
+            if r.len()==0 {
+                trace!("net_connection_data not OK - resending");
+                let _ = retry_sender.send(BackendCommand::NETConnectionData { id:id.clone(), data:None });
+            }
+        });
+    }
+    pub fn net_connection_end(&mut self, id:String) {
+        if let Some(sender) = self.net_connections.get(&id) {
+            let _ = sender.send(NETConnection::Disconnect);
+            self.net_connections.remove(&id);
+        }
+        let call_script=format!("window.__electrico.net_server.callback.on_end('{}');", id);
+        let retry_sender = self.command_sender.clone();
+        let _ = self.webview.evaluate_script_with_callback(&format!("window.__electrico.call(()=>{{{}}});", call_script.as_str()), move |r| {
+            if r.len()==0 {
+                trace!("net_connection_end not OK - resending");
+                let _ = retry_sender.send(BackendCommand::NETConnectionEnd { id:id.clone()});
+            }
+        });
+    }
+    pub fn net_write_connection(&mut self, id:String, data:Vec<u8>) {
+        if let Some(sender) = self.net_connections.get(&id) {
+            let _ = sender.send(NETConnection::Write { data });
+        } else {
+            error!("net_write_connection no sender for id {}", id);
+        }
+    }
+    pub fn get_data_blob(&mut self, id:String) -> Option<Vec<u8>> {
+        let data:Option<Vec<u8>>;
+        if let Some(d) = self.data_queue.take(&id) {
+            data = Some(d.to_vec());
+        } else {
+            data = None;
+        };
+        return data;
+    }
     pub fn process_commands(&mut self) {
         if let Ok(command) = self.command_receiver.try_recv() {
             match command {
@@ -830,7 +923,27 @@ impl Backend {
                 BackendCommand::FSWatchEvent { wid, event } => {
                     trace!("FSWatchEvent");
                     self.fs_watch_callback(wid, event);
+                },
+                BackendCommand::NETServerStart { id, sender } => {
+                    trace!("NETServerStart");
+                    self.net_server.insert(id, sender);
                 }
+                BackendCommand::NETServerConnStart { hook, id, sender } => {
+                    trace!("NETServerConnStart {}", hook);
+                    self.net_server_conn_start(hook, id, sender);
+                },
+                BackendCommand::NETClientConnStart { id, sender } => {
+                    trace!("NETClientConnStart {}", id);
+                    self.net_client_conn_start(id, sender);
+                },
+                BackendCommand::NETConnectionData {id,  data } => {
+                    trace!("NETConnectionData {}", id);
+                    self.net_connection_data(id, data);
+                },
+                BackendCommand::NETConnectionEnd { id } => {
+                    trace!("NETServerConnEnd {}", id);
+                    self.net_connection_end(id);
+                },
             }
         }
     }
@@ -854,6 +967,7 @@ impl Backend {
 use std::{collections::HashMap, fs::{self, File}, path::{Path, PathBuf}};
 
 use include_dir::{include_dir, Dir};
+use queues::{IsQueue, Queue};
 use reqwest::{header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE}, StatusCode};
 use tokio::runtime::Runtime;
 use wry::{http::Response, RequestAsyncResponder};
@@ -868,12 +982,14 @@ pub const CONTENT_TYPE_JS: &str = "text/javascript;charset=utf-8";
 pub const CONTENT_TYPE_BIN: &str = "application/octet-stream";
 pub const JS_DIR_FRONTEND: Dir = include_dir!("src/js/frontend");
 
-pub fn append_js_scripts(script:String, dir:Dir) -> String {
+pub fn append_js_scripts(script:String, dir:Dir, filter:Option<&str>) -> String {
     let mut res = script.clone();
     for f in dir.files() {
         let path = f.path().file_name().unwrap().to_str().unwrap().to_string();
-        if path.ends_with(".js") {
-            res += f.contents_utf8().unwrap_or("");
+        if let Some(filter) = filter {
+            if path.ends_with(filter) {
+                res += f.contents_utf8().unwrap_or("");
+            }
         }
     }
     res
@@ -992,6 +1108,41 @@ pub fn is_module_request(host:Option<&str>) -> bool {
         }
     }
     false
+}
+pub struct DataQueue {
+    data_blobs:HashMap<String, Queue<Vec<u8>>>
+}
+impl DataQueue {
+    pub fn new() -> DataQueue {
+        DataQueue {
+            data_blobs:HashMap::new()
+        }
+    }
+    pub fn add(&mut self, k:&String, data:Vec<u8>) {
+        if let Some(q) = self.data_blobs.get_mut(k) {
+           let _ = q.add(data);
+        } else {
+            let mut q = Queue::new();
+            let _ = q.add(data);
+            self.data_blobs.insert(k.clone(), q);
+        }
+    }
+    pub fn take(&mut self, k:&String) -> Option<Vec<u8>>{
+        if let Some(q) = self.data_blobs.get_mut(k) {
+            let ret:Option<Vec<u8>>;
+            if let Ok(data) = q.peek() {
+                let _ = q.remove();
+                ret = Some(data);
+            } else {
+                ret = None;
+            }
+            if q.size()==0 {
+                self.data_blobs.remove(k);
+            }
+            return ret;
+        }
+        None
+    }
 }
 ```
 
@@ -1850,8 +2001,8 @@ impl Frontend {
     pub fn new(rsrc_dir:PathBuf) -> Frontend {
         let mut frontendalljs:String = String::new();
         const JS_DIR_SHARED: Dir = include_dir!("src/js/shared");
-        frontendalljs = append_js_scripts(frontendalljs, JS_DIR_SHARED);
-        frontendalljs = append_js_scripts(frontendalljs, JS_DIR_FRONTEND);
+        frontendalljs = append_js_scripts(frontendalljs, JS_DIR_SHARED, Some(".js"));
+        frontendalljs = append_js_scripts(frontendalljs, JS_DIR_FRONTEND, Some("electrico.js"));
         Frontend {
             window_ids:HashMap::new(),
             windows:HashMap::new(),
@@ -1880,7 +2031,7 @@ impl Frontend {
                                 respond_status(StatusCode::FORBIDDEN, CONTENT_TYPE_TEXT.to_string(), "forbidden".to_string().into_bytes(), responder);
                                 return;
                             }
-                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::PostIPC {browser_window_id:ipc_handler_id.clone(), request_id, params}, responder});
+                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::PostIPC {browser_window_id:ipc_handler_id.clone(), request_id, params}, responder, data_blob:None});
                         },
                         FrontendCommand::GetProcessInfo {nonce} => {
                             if nonce!=ipc_handler_id {
@@ -1888,13 +2039,13 @@ impl Frontend {
                                 respond_status(StatusCode::FORBIDDEN, CONTENT_TYPE_TEXT.to_string(), "forbidden".to_string().into_bytes(), responder);
                                 return;
                             }
-                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::Node { invoke: crate::node::types::NodeCommand::GetProcessInfo }, responder});
+                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::Node { invoke: crate::node::types::NodeCommand::GetProcessInfo }, responder, data_blob:None});
                         },
                         FrontendCommand::DOMContentLoaded {title } => {
-                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::DOMContentLoaded {browser_window_id:ipc_handler_id.clone(), title}, responder});
+                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::DOMContentLoaded {browser_window_id:ipc_handler_id.clone(), title}, responder, data_blob:None});
                         },
                         FrontendCommand::Alert {message } => {
-                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::Electron { invoke: crate::electron::types::ElectronCommand::ShowMessageBoxSync { options: ShowMessageBoxOptions::new(message) } }, responder});
+                            let _ = ipc_proxy.send_event(ElectricoEvents::ExecuteCommand{command:Command::Electron { invoke: crate::electron::types::ElectronCommand::ShowMessageBoxSync { options: ShowMessageBoxOptions::new(message) } }, responder, data_blob:None});
                         }
                       }
                     }
@@ -1995,7 +2146,7 @@ impl Frontend {
                 browser_window_id:fil_handler_id.clone(), 
                 file_path: fpath, 
                 module:is_module_request(request.uri().host())
-            }, responder});
+            }, responder, data_blob:None});
         };
 
         let mut is_windows="false";
@@ -4573,7 +4724,7 @@ fn main() -> wry::Result<()> {
 
   env_logger::init_from_env(env);
 
-  let tokio_runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(20).enable_io().enable_time().build().unwrap();
+  let tokio_runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(30).enable_io().enable_time().build().unwrap();
 
   let mut rsrc_dir = std::env::current_exe()
     .expect("Can't find path to executable");
@@ -4659,7 +4810,7 @@ fn main() -> wry::Result<()> {
       Event::UserEvent(ElectricoEvents::IPCCallRetry{browser_window_id, request_id, params, sender}) => {
         backend.call_ipc_channel(&browser_window_id, &request_id, params, sender);
       }
-      Event::UserEvent(ElectricoEvents::ExecuteCommand{command, responder}) => {
+      Event::UserEvent(ElectricoEvents::ExecuteCommand{command, responder, data_blob}) => {
         trace!("backend ExecuteCommand call");
         match command {
           Command::PostIPC { browser_window_id, request_id, params} => {
@@ -4776,7 +4927,7 @@ fn main() -> wry::Result<()> {
             }
           }
           Command::Node { invoke } => {
-            process_node_command(&tokio_runtime, &app_env, proxy.clone(), &mut backend, invoke, responder);
+            process_node_command(&tokio_runtime, &app_env, proxy.clone(), &mut backend, invoke, responder, data_blob);
           }
         }
       },
@@ -5025,8 +5176,13 @@ fn ipc_connect(id:&String, c:interprocess::local_socket::tokio::Stream,
 /src/node/mod.rs:
 -----------------------
 
+
 pub mod node;
+pub mod process;
+pub mod ipc;
+pub mod common;
 pub mod types;
+
 
 -----------------------
 
@@ -5036,8 +5192,7 @@ pub mod types;
 <p align="left"><span><pre>
 
 ```rust
-use std::{fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path, process::{Command, Stdio}, sync::mpsc::{self, Receiver, Sender}, thread, time::SystemTime};
-use base64::prelude::*;
+use std::{fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path, time::SystemTime};
 use log::{debug, error, info, trace, warn};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::{header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE}, Method, Request, StatusCode, Url};
@@ -5045,8 +5200,8 @@ use tao::event_loop::EventLoopProxy;
 use tokio::runtime::Runtime;
 use wry::{http::Response, webview_version, RequestAsyncResponder};
 
-use crate::{backend::Backend, common::{respond_404, respond_client_error, respond_ok, respond_status, CONTENT_TYPE_BIN, CONTENT_TYPE_JSON, CONTENT_TYPE_TEXT}, node::types::{FSDirent, Process, ProcessEnv, ProcessVersions}, types::{BackendCommand, ChildProcess, ElectricoEvents}};
-use super::types::{ConsoleLogLevel, FSStat, NodeCommand};
+use crate::{backend::Backend, common::{respond_404, respond_client_error, respond_ok, respond_status, CONTENT_TYPE_BIN, CONTENT_TYPE_JSON, CONTENT_TYPE_TEXT}, node::{common::send_command, ipc::{ipc_connection, ipc_server}, types::{FSDirent, Process, ProcessEnv, ProcessVersions}}, types::{BackendCommand, ElectricoEvents}};
+use super::{process::child_process_spawn, types::{ConsoleLogLevel, FSStat, NodeCommand}};
 
 pub struct AppEnv {
     pub start_args: Vec<String>,
@@ -5071,16 +5226,12 @@ impl AppEnv {
     }
 }
 
-fn send_command(proxy:&EventLoopProxy<ElectricoEvents>, command_sender:&Sender<BackendCommand>, command:BackendCommand) {
-    let _ = command_sender.send(command);
-    let _ = proxy.send_event(ElectricoEvents::Noop);
-}
-
 pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
         proxy:EventLoopProxy<ElectricoEvents>,
         backend:&mut Backend,
         command:NodeCommand,
-        responder:RequestAsyncResponder)  {
+        responder:RequestAsyncResponder,
+        data_blob:Option<Vec<u8>>)  {
     let command_sender = backend.command_sender();
     match command {
         NodeCommand::ConsoleLog { params } => {
@@ -5290,37 +5441,34 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
                 }
             }
         },
-        NodeCommand::FSWriteFile { path, data, options } => {
-            if let Some(options) = options {
-                if let Some(_encoding) = options.encoding {
-                    match fs::write(path.as_str(), data) {
-                        Ok(_) => {
-                            respond_ok(responder);
-                        },
-                        Err (e) => {
-                            error!("FSWriteFile error: {}", e);
-                            respond_status(StatusCode::BAD_REQUEST, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile error: {}", e).into_bytes(), responder);
+        NodeCommand::FSWriteFile { path, options } => {
+            if let Some(data) = data_blob {
+                if let Some(options) = options {
+                    if let Some(_encoding) = options.encoding {
+                        match fs::write(path.as_str(), data) {
+                            Ok(_) => {
+                                respond_ok(responder);
+                            },
+                            Err (e) => {
+                                error!("FSWriteFile error: {}", e);
+                                respond_status(StatusCode::BAD_REQUEST, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile error: {}", e).into_bytes(), responder);
+                            }
                         }
+                        return;
                     }
-                    return;
                 }
-            }
-            match BASE64_STANDARD.decode(data) {
-                Ok(decoded) => {
-                    match fs::write(path.as_str(), decoded) {
-                        Ok(_) => {
-                            respond_ok(responder);
-                        },
-                        Err (e) => {
-                            error!("FSWriteFile error: {}", e);
-                            respond_status(StatusCode::BAD_REQUEST, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile error: {}", e).into_bytes(), responder);
-                        }
+                match fs::write(path.as_str(), data) {
+                    Ok(_) => {
+                        respond_ok(responder);
+                    },
+                    Err (e) => {
+                        error!("FSWriteFile error: {}", e);
+                        respond_status(StatusCode::BAD_REQUEST, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile error: {}", e).into_bytes(), responder);
                     }
-                },
-                Err(e) => {
-                    error!("FSWriteFile base64 decode error: {}", e);
-                    respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile base64 decode error: {}", e).into_bytes(), responder);
                 }
+            } else {
+                error!("FSWrite error, no data");
+                respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWriteFile error, no data").into_bytes(), responder);
             }
         },
         NodeCommand::FSOpen {fd, path, flags, mode } => {
@@ -5363,30 +5511,40 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
                 respond_404(responder);
             }
         },
-        NodeCommand::FSWrite { fd, data, offset, length, position } => {
+        NodeCommand::FSWrite { fd, offset, length, position } => {
             trace!("FSWrite {}, {}, {}, {:?}", fd, offset, length, position);
             if let Some(mut file) = backend.fs_get(fd) {
                 if let Some(position) = position {
                     let _ = file.seek(SeekFrom::Start(position));
                 }
                 let _ = file.seek(SeekFrom::Current(offset));
-                match BASE64_STANDARD.decode(data) {
-                    Ok(mut decoded) => {
-                        match file.write(&mut decoded) {
-                            Ok(written) => {
-                                respond_status(StatusCode::OK, CONTENT_TYPE_BIN.to_string(), written.to_string().as_bytes().to_vec(), responder);
-                            },
-                            Err(e) => {
-                                error!("FSWrite error: {}", e);
-                                respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWrite error: {}", e).into_bytes(), responder);
-                            }
+                if let Some(mut data) = data_blob {
+                    match file.write(&mut data) {
+                        Ok(written) => {
+                            respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), written.to_string().as_bytes().to_vec(), responder);
+                        },
+                        Err(e) => {
+                            error!("FSWrite error: {}", e);
+                            respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWrite error: {}", e).into_bytes(), responder);
                         }
-                    },
-                    Err(e) => {
-                        error!("FSWrite base64 decode error: {}", e);
-                        respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWrite base64 decode error: {}", e).into_bytes(), responder);
                     }
+                } else {
+                    error!("FSWrite error, no data");
+                    respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("FSWrite error, no data").into_bytes(), responder);
                 }
+                
+            } else {
+                respond_404(responder);
+            }
+        },
+        NodeCommand::FSRealPath { path } => {
+            let rp = Path::new(path.as_str()).as_os_str().to_str().unwrap().to_string();
+            respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), rp.as_bytes().to_vec(), responder);
+        },
+        NodeCommand::FSFdatasync { fd } => {
+            if let Some(file) = backend.fs_get(fd) {
+                let _ = file.sync_all();
+                respond_ok(responder);
             } else {
                 respond_404(responder);
             }
@@ -5450,117 +5608,10 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
             );
         },
         NodeCommand::ChildProcessSpawn { cmd, args } => {
-            let mut pargs:Vec<String> = Vec::new();
-            if let Some(args) = args {
-                pargs = args;
-            }
-            match Command::new(cmd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .args(pargs).spawn() {
-                Ok(mut child) => {
-                    let (sender, receiver): (Sender<ChildProcess>, Receiver<ChildProcess>) = mpsc::channel();
-                    backend.child_process_start(child.id().to_string(), sender);
-                    respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), child.id().to_string().into_bytes(), responder); 
-                    tokio_runtime.spawn(
-                        async move {
-                            let mut stdout;
-                            let mut stderr;
-                            let mut stdin;
-                            match child.stdout.take() {
-                                Some(chstdout) => {
-                                    stdout=chstdout;
-                                }, 
-                                None => {
-                                    error!("ChildProcessSpawn stdout not available");
-                                    let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
-                                    return;
-                                }
-                            }
-                            match child.stderr.take() {
-                                Some(chstderr) => {
-                                    stderr=chstderr;
-                                }, 
-                                None => {
-                                    error!("ChildProcessSpawn stderr not available");
-                                    let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
-                                    return;
-                                }
-                            }
-                            match child.stdin.take() {
-                                Some(chstdin) => {
-                                    stdin=chstdin;
-                                }, 
-                                None => {
-                                    error!("ChildProcessSpawn stdid not available");
-                                    let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:None});
-                                    return;
-                                }
-                            }
-                            let mut exit_code:Option<i32> = None;
-                            loop {
-                                if let Ok(cp) = receiver.try_recv() {
-                                    match cp {
-                                        ChildProcess::StdinWrite { data } => {
-                                            trace!("writing stdin {}", data.len());
-                                            let _ = stdin.write(data.as_slice());
-                                        },
-                                        ChildProcess::Disconnect => {
-                                            trace!("disconnect");
-                                            break;
-                                        }
-                                    }
-                                }
-                                let mut stdinread:usize=0;
-                                let mut stderrread:usize=0;
-                                let stdout_buf:&mut [u8] = &mut [0; 1024];
-                                if let Ok(read) = stdout.read(stdout_buf) {
-                                    trace!("stdout read {}", read);
-                                    stdinread = read;
-                                    if read>0 {
-                                        let data:Vec<u8> = stdout_buf[0..read].to_vec();
-                                        let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessCallback { pid:child.id().to_string(), stream:"stdout".to_string(), data:data });
-                                    }
-                                }
-                                let stderr_buf:&mut [u8] = &mut [0; 1024];
-                                if let Ok(read) = stderr.read(stderr_buf) {
-                                    trace!("stderr read {}", read);
-                                    stderrread = read;
-                                    if read>0 {
-                                        let data:Vec<u8> = stderr_buf[0..read].to_vec();
-                                        let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessCallback { pid:child.id().to_string(), stream:"stderr".to_string(), data:data });
-                                    }
-                                }
-                                match child.try_wait() {
-                                    Ok(event) => {
-                                        if let Some(event) = event {
-                                            exit_code = event.code();
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("ChildProcessSpawn try_wait error: {}", e);
-                                        break;
-                                    }
-                                }
-                                if let Some(_exit_code) = exit_code {
-                                    if stdinread==0 && stderrread==0 {
-                                        break;
-                                    }
-                                }
-                                thread::yield_now();
-                            }
-                            let _ = send_command(&proxy, &command_sender, BackendCommand::ChildProcessExit {pid:child.id().to_string(), exit_code:exit_code});
-                        }
-                    );         
-                },
-                Err(e) => {
-                    respond_client_error(format!("Error: {}", e), responder);
-                }
-            }
+            child_process_spawn(cmd, args, backend, tokio_runtime, proxy, command_sender, responder);
         },
-        NodeCommand::ChildProcessStdinWrite { pid, data } => {
-            backend.child_process_callback(pid, "stdin".to_string(), data.into_bytes());
+        NodeCommand::ChildProcessStdinWrite { pid } => {
+            backend.child_process_callback(pid, "stdin".to_string(), data_blob);
             respond_ok(responder);
         },
         NodeCommand::ChildProcessDisconnect { pid } => {
@@ -5601,6 +5652,39 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
         NodeCommand::FSWatchClose { wid } => {
             backend.watch_stop(wid);
             respond_ok(responder);
+        },
+        NodeCommand::NETCreateServer {hook, options } => {
+            trace!("NETCreateServer {}", hook);
+            ipc_server(hook, tokio_runtime, proxy, command_sender, responder);
+        },
+        NodeCommand::NETCloseServer { id } => {
+            backend.net_server_close(id);
+            respond_ok(responder);
+        },
+        NodeCommand::NETCloseConnection { id } => {
+            backend.net_connection_close(id);
+            respond_ok(responder);
+        },
+        NodeCommand::NETCreateConnection { hook, id } => {
+            trace!("NETCreateConnection {}, {}", hook, id);
+            ipc_connection(hook, id, tokio_runtime, proxy, command_sender, responder);
+        },
+        NodeCommand::NETWriteConnection { id } => {
+            trace!("NETWriteConnection {}", id);
+            if let Some(data) = data_blob {
+                backend.net_write_connection(id, data);
+                respond_ok(responder);
+            } else {
+                error!("NETWriteConnection error, no data");
+                respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("NETWriteConnection error, no data").into_bytes(), responder);
+            }
+        },
+        NodeCommand::GetDataBlob { id } => {
+            if let Some(data) = backend.get_data_blob(id) {
+                respond_status(StatusCode::OK, CONTENT_TYPE_BIN.to_string(), data, responder);
+            } else {
+                respond_404(responder);
+            }
         }
     }
 }
@@ -5820,6 +5904,11 @@ impl FSStat {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct NETOptions {
+  
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "command")]
 pub enum NodeCommand {
   ConsoleLog {params: ConsoleLogParam},
@@ -5830,17 +5919,25 @@ pub enum NodeCommand {
   FSMkdir {path:String, options:Option<FSOptions>},
   FSReadFile {path:String, options:Option<FSOptions>},
   FSReadDir {path:String, options:Option<FSOptions>},
-  FSWriteFile {path:String, data:String, options:Option<FSOptions>},
+  FSWriteFile {path:String, options:Option<FSOptions>},
   FSWatch {path:String, wid:String, options:Option<FSOptions>},
   FSWatchClose {wid:String},
   FSOpen {fd:i64, path:String, flags:String, mode:String},
   FSClose {fd:i64},
   FSRead {fd:i64, offset:i64, length:usize, position:Option<u64>},
-  FSWrite {fd:i64, data:String, offset:i64, length:usize, position:Option<u64>},
+  FSWrite {fd:i64, offset:i64, length:usize, position:Option<u64>},
+  FSRealPath {path:String},
+  FSFdatasync {fd:i64},
+  NETCreateServer {hook:String, options: Option<NETOptions>},
+  NETCloseServer {id:String},
+  NETCloseConnection {id:String},
+  NETCreateConnection {hook:String, id:String},
+  NETWriteConnection {id:String},
   HTTPRequest {options:HTTPOptions},
   ChildProcessSpawn {cmd: String, args:Option<Vec<String>>},
-  ChildProcessStdinWrite {pid: String, data:String},
-  ChildProcessDisconnect {pid: String}
+  ChildProcessStdinWrite {pid: String},
+  ChildProcessDisconnect {pid: String},
+  GetDataBlob {id: String}
 }
 
 #[derive(Default)]
@@ -5919,10 +6016,25 @@ pub enum ChildProcess {
   Disconnect
 }
 
+pub enum NETConnection {
+  Write {data: Vec<u8>},
+  Disconnect,
+  EndConnection
+}
+
+pub enum NETServer {
+  Close
+}
+
 pub enum BackendCommand {
-  ChildProcessCallback {pid:String, stream:String, data:Vec<u8>},
+  ChildProcessCallback {pid:String, stream:String, data:Option<Vec<u8>>},
   ChildProcessExit {pid:String, exit_code:Option<i32>},
   FSWatchEvent {wid:String, event:Event},
+  NETServerStart {id:String, sender:Sender<NETServer>},
+  NETServerConnStart {hook:String, id:String, sender:Sender<NETConnection>},
+  NETConnectionData {id:String, data:Option<Vec<u8>>},
+  NETConnectionEnd {id:String},
+  NETClientConnStart {id:String, sender:Sender<NETConnection>},
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -5946,14 +6058,21 @@ pub enum FrontendCommand {
 }
 
 pub enum ElectricoEvents {
-  ExecuteCommand {command: Command, responder: RequestAsyncResponder},
+  ExecuteCommand {command: Command, responder: RequestAsyncResponder, data_blob:Option<Vec<u8>>},
   FrontendNavigate {browser_window_id:String, page: String, preload: String},
   IPCCallRetry {browser_window_id:String, request_id:String, params:String, sender:Sender<IPCMsg>},
   SendChannelMessageRetry { browser_window_id:String, channel:String, args:String},
   Exit,
   Noop
 }
+
 ```
 
 </pre></span></p>
 
+
+<p align="center">
+	<br><span>[back to top](#---back)</span><br>
+</p>
+
+<br><br>
