@@ -2312,9 +2312,70 @@ var __electrico_nonce=null;
             //console.log("excluded",k);
         }
     }
-    window.__init_shared(window, true);
+    window.__init_shared(window);
+    function createCMDRequest(async, name) {
+        const req = new XMLHttpRequest();
+        req.open("POST", window.__create_protocol_url("cmd://cmd/"+(name!=null?name:"execute")), async);
+        return req;
+    }
+    window.createCMDRequest=createCMDRequest;
+    let e_command = function(action) {
+        return new Proxy({}, {
+            get(target, call, rec) {
+                return function(params, data_blob) {
+                    let command; let async=false;
+                    if (call.startsWith("async")) {
+                        async=true;
+                        command=call.substring(5);
+                    } else if (call.startsWith("sync")) {
+                        command=call.substring(4);
+                    } else {
+                        command=call;
+                    }
+                    if (params==null) {
+                        params={};
+                    }
+                    let body; let urlcmd=null;
+                    let cmdjson = JSON.stringify({"action":action, invoke:{"command":command, ...params}});
+                    if (data_blob!=null) {
+                        urlcmd=cmdjson;
+                        body=data_blob;
+                    } else {
+                        body=cmdjson;
+                    }
+                    const req = new XMLHttpRequest();
+                    req.open("POST", window.__create_protocol_url("cmd://cmd/"+action+"."+call+(urlcmd!=null?("?"+encodeURIComponent(urlcmd)):"")), async);
+                    req.send(body);
+                    if (async) {
+                        return {
+                            then: cb => {
+                                req.onreadystatechange = function() {
+                                    if (this.readyState == 4) {
+                                        if (req.status == 200) {
+                                            cb(null, req.responseText);
+                                        } else {
+                                            cb(req.responseText, null);
+                                        }
+                                    }
+                                };
+                            }
+                        }
+                    } else {
+                        if (req.status==200) {
+                            return {r:req.responseText};
+                        } else {
+                            return {e:req.responseText};
+                        }
+                    }
+                };
+            }
+        });
+    }
+    window.$e_node=e_command("Node");
+    window.$e_electron=e_command("Electron");
+
     function createLogMsg(level, logmsg, logdata) {
-        return {"action":"Node", invoke:{command:"ConsoleLog", "params":{"level": level, "logmsg":logmsg, "logdata":JSON.stringify(logdata)}}};
+        return {"params":{"level": level, "logmsg":logmsg, "logdata":JSON.stringify(logdata)}};
     }
     
     window.onerror = (event) => {
@@ -2327,32 +2388,27 @@ var __electrico_nonce=null;
     let console_trace = window.console.trace;
     window.console.log = (logmsg, ...logdata) => {
         console_log(logmsg, ...logdata);
-        const req = createCMDRequest(true);
-        req.send(JSON.stringify(createLogMsg("Info", logmsg+"", logdata)));
+        $e_node.asyncConsoleLog(createLogMsg("Info", logmsg+"", logdata));
     };
     window.console.info = window.console.log;
     window.console.debug = (logmsg, ...logdata) => {
         console_debug(logmsg, ...logdata);
-        const req = createCMDRequest(true);
-        req.send(JSON.stringify(createLogMsg("Debug", logmsg+"", logdata)));
+        $e_node.asyncConsoleLog(createLogMsg("Debug", logmsg+"", logdata));
     };
     window.console.error = (logmsg, ...logdata) => {
         console_error(logmsg, ...logdata);
-        const req = createCMDRequest(true);
         for (let i=0; i<logdata.length; i++) {
             if (logdata[i] instanceof Error) logdata[i]=logdata[i].message;
         }
-        req.send(JSON.stringify(createLogMsg("Error", logmsg+"", logdata)));
+        $e_node.asyncConsoleLog(createLogMsg("Error", logmsg+"", logdata));
     };
     window.console.warn = (logmsg, ...logdata) => {
         console_warn(logmsg, ...logdata);
-        const req = createCMDRequest(true);
-        req.send(JSON.stringify(createLogMsg("Warn", logmsg+"", logdata)));
+        $e_node.asyncConsoleLog(createLogMsg("Warn", logmsg+"", logdata));
     };
     window.console.trace = (logmsg, ...logdata) => {
         console_trace(logmsg, ...logdata);
-        const req = createCMDRequest(true);
-        req.send(JSON.stringify(createLogMsg("Trace", logmsg+"", logdata)));
+        $e_node.asyncConsoleLog(createLogMsg("Trace", logmsg+"", logdata));
     };
     var SenderCls=null;
     function callChannel(timeout, browserWindowID, requestID, channel, ...args) {
@@ -2395,7 +2451,7 @@ var __electrico_nonce=null;
                 if (response==undefined) response=null;
                 event.returnValue = response;
                 timeout.cleared = true;
-                const req = createCMDRequest(true);
+                const req = createCMDRequest(true, "Frontend.SetIPCResponse");
                 req.send(JSON.stringify({"action":"SetIPCResponse", "request_id":requestID, "params": JSON.stringify(response)}));
             }).catch((e) => {
                 console.error("callChannel error", e);
@@ -2413,6 +2469,9 @@ var __electrico_nonce=null;
             arguments: JSON.parse(argumentsstr.substring(sep_requestid+2, argumentsstr.length))
         }
     }
+    function wrapNodeInvoke(invoke) {
+        return {"action":"Node", invoke:invoke};
+    }
     window.__electrico={
         app_menu:{},
         module_paths: {},
@@ -2423,16 +2482,22 @@ var __electrico_nonce=null;
         },
         child_process: {
             callback: {
-                on_stdout: (pid, data) => {
+                on_stdout: (pid) => {
+                    let Buffer = require('buffer').Buffer;
+                    let {r, e} = $e_node.syncGetDataBlob({"id":pid});
+                    let bdata = Buffer.from(r);
                     let cb = window.__electrico.child_process[pid].stdout_on['data'];
                     if (cb!=null) {
-                        cb(data);
+                        cb(bdata);
                     }
                 },
                 on_stderr: (pid, data) => {
+                    let Buffer = require('buffer').Buffer;
+                    let {r, e} = $e_node.syncGetDataBlob({"id":pid});
+                    let bdata = Buffer.from(r);
                     let cb = window.__electrico.child_process[pid].stderr_on['data'];
                     if (cb!=null) {
-                        cb(data);
+                        cb(bdata);
                     }
                 },
                 on_close: (pid, exit_code) => {
@@ -2458,6 +2523,32 @@ var __electrico_nonce=null;
                 }
             }
         },
+        net_server: {
+            callback: {
+                on_start: (hook, id) => {
+                    let server = window.__electrico.net_server[hook];
+                    if (server!=null) {
+                        server._connection_start(id);
+                    }
+                },
+                on_data: (id) => {
+                    let connection = window.__electrico.net_server[id];
+                    if (connection!=null) {
+                        let Buffer = require('buffer').Buffer;
+                        let {r, e} = $e_node.syncGetDataBlob({"id":id});
+                        let bdata = Buffer.from(r);
+                        connection.emit("data", bdata);
+                    }
+                },
+                on_end: (id) => {
+                    let connection = window.__electrico.net_server[id];
+                    if (connection!=null) {
+                        connection._connection_end(id);
+                    }
+                }
+            }
+        },
+        net_client: {},
         app: {},
         libs: window.__electrico!=null?window.__electrico.libs:{},
         getLib: (mpath, nonce) => {
@@ -2498,7 +2589,7 @@ var __electrico_nonce=null;
                         if (resp==null && window.__electrico.error!=null) {
                             console.error("callChannel script error", channel, window.__electrico.error);
                             delete window.__electrico.error;
-                            const req = createCMDRequest(true);
+                            const req = createCMDRequest(true, "Frontend.SetIPCResponse");
                             req.send(JSON.stringify({"action":"SetIPCResponse", "request_id":p.requestID, "params": JSON.stringify(null)}));
                         } else {
                             setTimeout(timeout.trigger, 1000);
@@ -2529,7 +2620,7 @@ var __electrico_nonce=null;
                     }
                     window.__electrico.browser_window[winid].emit("close", closeEvent);
                     if (!prevented) {
-                        const req = createCMDRequest(true);
+                        const req = createCMDRequest(true, "Frontend.BrowserWindowClose");
                         req.send(JSON.stringify(window.__electrico.wrapInvoke({"command":"BrowserWindowClose", "id":winid}))); 
                     }
                 }
@@ -2553,15 +2644,13 @@ var __electrico_nonce=null;
             if (prop=="stdout") {
                 return {
                     write: (d) => {
-                        const req = createCMDRequest(true);
-                        req.send(JSON.stringify(createLogMsg("Info", d)));
+                        console.log(d);
                     }
                 }
             }
             if (prop=="argv") {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify({"action":"Node", invoke:{command:"GetStartArgs"}}));
-                return JSON.parse(req.responseText);
+                let {r, e} = $e_node.syncGetStartArgs();
+                return JSON.parse(r);
             }
             if (prop=="cwd") {
                 return () => {
@@ -2583,9 +2672,8 @@ var __electrico_nonce=null;
                 }
             }
             if (_process==null) {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify({"action":"Node", invoke:{command:"GetProcessInfo"}}));
-                _process = JSON.parse(req.responseText);
+                let {r, e} = $e_node.syncGetProcessInfo();
+                _process = JSON.parse(r);
                 for (let k in _process) {
                     target[k] = _process[k];
                 }
@@ -2595,6 +2683,10 @@ var __electrico_nonce=null;
     });
     window.process=process;
 })();
+
+require("./node.js");
+require("./electron.js");
+
 ```
 
 </pre></span></p>
@@ -2641,72 +2733,57 @@ var __electrico_nonce=null;
                     this.id=id;
                 }
                 openDevTools() {
-                    const req = createCMDRequest(true);
-                    req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowDevTools", "params":{"id":this.id, "call": "Open"}}))); 
+                    $e_electron.asyncBrowserWindowDevTools({"params":{"id":this.id, "call": "Open"}});
                 }
                 closeDevTools() {
-                    const req = createCMDRequest(true);
-                    req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowDevTools", "params":{"id":this.id, "call": "Close"}}))); 
+                    $e_electron.asyncBrowserWindowDevTools({"params":{"id":this.id, "call": "Close"}});
                 }
                 executeJavaScript (script) {
-                    const req = createCMDRequest(true);
-                    req.send(JSON.stringify(wrapInvoke({"command":"ExecuteJavascript", "id":this.id, "script":script}))); 
+                    $e_electron.asyncExecuteJavascript({"id":this.id, "script":script});
                 }
                 printToPDF (options) {
-                    const req = createCMDRequest(false);
-                    req.send(JSON.stringify(wrapInvoke({"command":"PrintToPDF", "id":this.id})));
+                    $e_electron.syncPrintToPDF({"id":this.id});
                     return "";
                 }
                 send (channel, ...args) {
-                    const req = createCMDRequest(true);
-                    req.send(JSON.stringify(wrapInvoke({"command":"ChannelSendMessage", "id":this.id, "channel":channel, "args":JSON.stringify(args)}))); 
+                    $e_electron.asyncChannelSendMessage({"id":this.id, "channel":channel, "args":JSON.stringify(args)});
                 }
             }
             this.webContents = new WebContentsCls(this.id);
             this.getContentBounds = (() => {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowBounds", "id":this.id, "params": {"method": "Get"}})));
-                return JSON.parse(req.responseText);
+                let {r, e} = $e_electron.syncBrowserWindowBounds({"id":this.id, "params": {"method": "Get"}});
+                return JSON.parse(r);
             }).bind(this);
             this.setContentBounds = ((bounds , animate) => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowBounds", "id":this.id, "params": {"method":"Set", "bounds":bounds}})));
+                $e_electron.asyncBrowserWindowBounds({"id":this.id, "params": {"method":"Set", "bounds":bounds}});
             }).bind(this);
             this.isMaximized = (() => {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowMaximized", "id":this.id, "params": {"method": "Get"}})));
-                return req.responseText=="true";
+                let {r, e} = $e_electron.syncBrowserWindowMaximized({"id":this.id, "id":this.id, "params": {"method": "Get"}});
+                return r=="true";
             }).bind(this);
             this.maximize = (() => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowMaximized", "id":this.id, "params": {"method":"Set", "maximized":true}})));
+                $e_electron.asyncBrowserWindowMaximized({"id":this.id, "params": {"method":"Set", "maximized":true}});
             }).bind(this);
             this.unmaximize = (() => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowMaximized", "id":this.id, "params": {"method":"Set", "maximized":false}})));
+                $e_electron.asyncBrowserWindowMaximized({"id":this.id, "params": {"method":"Set", "maximized":false}});
             }).bind(this);
             this.isMinimized = (() => {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowMinimized", "id":this.id, "params": {"method": "Get"}})));
-                return req.responseText=="true";
+                let {r, e} = $e_electron.syncBrowserWindowMinimized({"id":this.id, "id":this.id, "params": {"method": "Get"}});
+                return r=="true";
             }).bind(this);
             this.minimize = (() => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowMinimized", "id":this.id, "params": {"method":"Set", "minimized":true}})));
+                $e_electron.asyncBrowserWindowMinimized({"id":this.id, "params": {"method":"Set", "minimized":true}});
             }).bind(this);
             this.close = (() => {
                 window.__electrico.callAppOn("window-close", this.id);
             }).bind(this);
             this.show = (() => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowShow", "id":this.id, "shown":true}))); 
+                $e_electron.asyncBrowserWindowShow({"id":this.id, "id":this.id, "shown":true});
             }).bind(this);
             this.hide = (() => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowShow", "id":this.id, "shown":false}))); 
+                $e_electron.asyncBrowserWindowShow({"id":this.id, "id":this.id, "shown":false});
             }).bind(this);
             window.__electrico.browser_window[this.id]=this;
-            const req = createCMDRequest(false);
             this.config.title = this.config.title || "Electrico Window";
             this.config.resizable = this.config.resizable!=null?this.config.resizable:true;
             this.config.modal = this.config.modal!=null?this.config.modal:false;
@@ -2720,16 +2797,14 @@ var __electrico_nonce=null;
             if (this.config.webPreferences.contextIsolation==null) {
                 this.config.webPreferences.contextIsolation=true;
             }
-            req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowCreate", "params":{"id":this.id, "config": this.config}}))); 
+            let {r, e} = $e_electron.syncBrowserWindowCreate({"id":this.id, "params":{"id":this.id, "config": this.config}});
         }
         
         loadFile(file) {
-            const req = createCMDRequest(true);
-            req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowLoadfile", "params":{"id":this.id, "file":file, "config": this.config}}))); 
+            $e_electron.asyncBrowserWindowLoadfile({"params":{"id":this.id, "file":file, "config": this.config}});
         }
         loadURL(url) {
-            const req = createCMDRequest(true);
-            req.send(JSON.stringify(wrapInvoke({"command":"BrowserWindowLoadfile", "params":{"id":this.id, "file":url, "config": this.config}}))); 
+            $e_electron.asyncBrowserWindowLoadfile({"params":{"id":this.id, "file":url, "config": this.config}});
         }
         removeMenu = () => {
             console.log("BrowserWindow.removeMenu");
@@ -2772,25 +2847,22 @@ var __electrico_nonce=null;
             }
             setTimeout(()=>{
                 this.emit("ready");
-            }, 0);
+            }, 1000);
         }
         setName (name) {
             window.__electrico.app.name=name;
-            const req = createCMDRequest(true);
-            req.send(JSON.stringify(wrapInvoke({"command":"AppSetName", "name": name})));
+            $e_electron.asyncAppSetName({"name": name});
         }
         getName() {
             return window.__electrico.app.name;
         }
         getAppPath() {
-            const req = createCMDRequest(false);
-            req.send(JSON.stringify(wrapInvoke({"command":"GetAppPath"})));
-            return req.responseText;
+            let {r, e} = $e_electron.syncGetAppPath();
+            return r;
         }
         getPath(path) {
-            const req = createCMDRequest(false);
-            req.send(JSON.stringify(wrapInvoke({"command":"GetAppPath", "path":path})));
-            return req.responseText;
+            let {r, e} = $e_electron.syncGetAppPath({"path":path});
+            return r;
         }
         whenReady () {
             return {
@@ -2800,16 +2872,14 @@ var __electrico_nonce=null;
             };
         }
         quit() {
-            const req = createCMDRequest(true);
-            req.send(JSON.stringify(wrapInvoke({"command":"AppQuit", "exit":false})));
+            $e_electron.asyncAppQuit({"exit":false});
         }
         exit() {
-            const req = createCMDRequest(true);
-            req.send(JSON.stringify(wrapInvoke({"command":"AppQuit", "exit":true})));
+            $e_electron.asyncAppQuit({"exit":true});
         }
         getVersion(){
-            const req = createCMDRequest(false);
-            req.send(JSON.stringify(wrapInvoke({"command":"GetAppVersion"})));
+            let {r, e} = $e_electron.syncGetAppVersion();
+            return r;
         }
         requestSingleInstanceLock(ad) {
             return true;
@@ -2856,8 +2926,7 @@ var __electrico_nonce=null;
             },
             setApplicationMenu(menu) {
                 window.__electrico.app_menu.menu=menu;
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"SetApplicationMenu", "menu": menu})));
+                $e_electron.asyncSetApplicationMenu({"menu": menu});
             },
             getApplicationMenu() {
                 return window.__electrico.app_menu.menu;
@@ -2865,10 +2934,6 @@ var __electrico_nonce=null;
         },
         screen: {
             getPrimaryDisplay: () => {
-                /*const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"GetPrimaryDisplay"})));
-                let res = JSON.parse(req.responseText);
-                return res!=null?JSON.parse(req.responseText):undefined;*/
                 return {
                     bounds: {
                         width:window.screen.width,
@@ -2895,10 +2960,8 @@ var __electrico_nonce=null;
                     options=win;
                     win=null;
                 }
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"ShowOpenDialogSync", options:options})));
-                let res = JSON.parse(req.responseText);
-                return res!=null?JSON.parse(req.responseText):undefined;
+                let {r, e} = $e_electron.syncShowOpenDialogSync({options:options});
+                return JSON.parse(r);
             },
             showOpenDialog: (win, options) => {
                 if (options==null) {
@@ -2906,16 +2969,12 @@ var __electrico_nonce=null;
                     win=null;
                 }
                 return new Promise(resolve => {
-                    const req = createCMDRequest(true);
-                    req.onreadystatechange = function() {
-                        if (this.readyState == 4) {
-                            if (req.status == 200) {
-                                let res = JSON.parse(req.responseText);
-                                resolve({"canceled": res==null, "filePaths":res});
-                            } else throw "showOpenDialog failed: "+req.status;
-                        }
-                    };
-                    req.send(JSON.stringify(wrapInvoke({"command":"ShowOpenDialog", "window_id": win!=null?win.id:null, options:options})));
+                    $e_electron.asyncShowOpenDialog({"window_id": win!=null?win.id:null, options:options}).then((e, r)=>{
+                        if (e!=null) {
+                            let res = JSON.parse(r);
+                            resolve({"canceled": res==null, "filePaths":res});
+                        } else throw "showOpenDialog failed: "+e;
+                    });
                 });
             },
             showSaveDialogSync: (win, options) => {
@@ -2923,10 +2982,8 @@ var __electrico_nonce=null;
                     options=win;
                     win=null;
                 }
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"ShowSaveDialogSync", options:options})));
-                let res = JSON.parse(req.responseText);
-                return res!=""?req.responseText:undefined;
+                let {r, e} = $e_electron.syncShowSaveDialogSync({options:options});
+                JSON.parse(r);
             },
             showSaveDialog: (win, options) => {
                 if (options==null) {
@@ -2934,17 +2991,12 @@ var __electrico_nonce=null;
                     win=null;
                 }
                 return new Promise(resolve => {
-                    const req = createCMDRequest(true);
-                    req.onreadystatechange = function() {
-                        if (this.readyState == 4) {
-                            if (req.status == 200) {
-                                let res = req.responseText;
-                                console.log("showSaveDialog response", res);
-                                resolve({"canceled": res=="", "filePath":res});
-                            } else throw "showSaveDialog failed: "+req.status;
-                        }
-                    };
-                    req.send(JSON.stringify(wrapInvoke({"command":"ShowSaveDialog", "window_id": win!=null?win.id:null, options:options})));
+                    $e_electron.asyncShowSaveDialog({"window_id": win!=null?win.id:null, options:options}).then((e, r)=>{
+                        if (e!=null) {
+                            let res = JSON.parse(r);
+                            resolve({"canceled": res==null, "filePaths":res});
+                        } else throw "showOpenDialog failed: "+e;
+                    });
                 });
             },
             showMessageBoxSync: (win, options) => {
@@ -2952,20 +3004,16 @@ var __electrico_nonce=null;
                     options=win;
                     win=null;
                 }
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"ShowMessageBoxSync", options:options})));
-                let res = JSON.parse(req.responseText);
-                return res!=null?JSON.parse(req.responseText):undefined;
+                let {r, e} = $e_electron.syncShowMessageBoxSync({options:options});
+                JSON.parse(r);
             }
         },
         shell: {
             openExternal: (url, options) => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"ShellOpenExternal", url:url})));
+                $e_electron.asyncShellOpenExternal({url:url});
             },
             openPath: (path, options) => {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"ShellOpenExternal", url:path})));
+                $e_electron.asyncShellOpenExternal({url:path});
             }
         },
         protocol: {
@@ -2987,9 +3035,8 @@ var __electrico_nonce=null;
     var {Buffer} = require("buffer");
     window.Buffer=Buffer;
 
-    const req = createCMDRequest(false);
-    req.send(JSON.stringify(wrapInvoke({"command":"GetAppPath"})));
-    window.__electrico.appPath = req.responseText;
+    let {r, e} = $e_electron.syncGetAppPath();
+    window.__electrico.appPath = r;
 })();
 ```
 
@@ -3022,11 +3069,11 @@ var __electrico_nonce=null;
     util.promisify = (f) => {
         return function(...args) {
             return new Promise((resolve, reject) => {
-                f(...args, (err, value) => {
-                    if (error!=null) {
+                f(...args, (err, ...value) => {
+                    if (err!=null) {
                         reject(err);
                     } else {
-                        resolve(value);
+                        resolve(...value);
                     }
                 });
             })
@@ -3049,33 +3096,26 @@ var __electrico_nonce=null;
                 "X_OK": 8,
             },
             accessSync(path, mode) {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSAccess", "path":path, "mode": mode!=null?mode:1})));
-                if (req.responseText!="OK") throw "file access failed: "+path;
+                let {r, e} = $e_node.syncFSAccess({"path":path, "mode": mode!=null?mode:1});
+                if (e!=null) throw "file access failed: "+path;
             },
             access(path, mode, cb) {
                 if (cb==null) {
                     cb = mode;
                     mode=null;
-                } 
-                const req = createCMDRequest(false);
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            if (req.responseText=="OK") {
-                                cb();
-                            } else {
-                                cb("file access failed: "+path);
-                            }
-                        }
+                }
+                $e_node.asyncFSAccess({"path":path, "mode": mode!=null?mode:1}).then((e, r)=>{
+                    if (e!=null) {
+                        cb("file access failed: "+path);
+                    } else {
+                        cb();
                     }
-                };
-                req.send(JSON.stringify(wrapInvoke({"command":"FSAccess", "path":path, "mode": mode!=null?mode:1})));
+                });
             },
             lstatSync(path) {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSLstat", "path":path})));
-                let resp = JSON.parse(req.responseText);
+                let {r, e} = $e_node.syncFSLstat({"path":path});
+                if (e!=null) throw "lstat failed: "+path;
+                let resp = JSON.parse(r);
                 return {
                     isDirectory: () => {
                         return resp.isDirectory
@@ -3088,35 +3128,27 @@ var __electrico_nonce=null;
                 };
             },
             existsSync(path) {
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSAccess", "path":path, "mode": 1})));
-                return req.responseText=="OK";
+                let {r, e} = $e_node.syncFSAccess({"path":path, "mode": 1});
+                return r=="OK";
             },
             exists(path, mode, cb) {
                 if (cb==null) {
                     cb = mode;
                     mode=null;
-                } 
-                const req = createCMDRequest(false);
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            if (req.responseText=="OK") {
-                                cb(true);
-                            } else {
-                                cb(false);
-                            }
-                        }
+                }
+                $e_node.asyncFSAccess({"path":path, "mode": 1}).then((e, r)=>{
+                    if (r=="OK") {
+                        cb(true);
+                    } else {
+                        cb(false);
                     }
-                };
-                req.send(JSON.stringify(wrapInvoke({"command":"FSAccess", "path":path, "mode": 1})));
+                });
             },
             mkdirSync(path, options) {
                 if (options!=null && typeof options != 'object') options = {recursive: options};
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSMkdir", "path":path, options:options})));
-                if (req.status != 200) throw "mkdir failed: "+path;
-                return req.responseText;
+                let {r, e} = $e_node.syncFSMkdir({"path":path, options:options});
+                if (e!=null) throw "mkdir failed: "+path;
+                return r;
             },
             mkdir(path, options, cb) {
                 if (cb==null) {
@@ -3124,23 +3156,18 @@ var __electrico_nonce=null;
                     options=null;
                 }
                 if (options!=null && typeof options != 'object') options = {recursive: options};
-                const req = createCMDRequest(true);
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            cb(req.responseText);
-                        } else throw "mkdir failed: "+path;
+                $e_node.asyncFSMkdir({"path":path, options:options}).then((e, r)=>{
+                    if (e!==null) {
+                        throw "mkdir failed: "+path;
+                    } else {
+                        cb(r);
                     }
-                };
-                req.send(JSON.stringify(wrapInvoke({"command":"FSMkdir", "path":path, options:options})));
+                });
             },
             writeFileSync(path, data, options) {
                 if (options!=null && typeof options != 'object') options = {encoding: options};
-                const req = createCMDRequest(false);
-                if (options==null || options.encoding==null) {
-                    data = btoa(data);
-                }
-                req.send(JSON.stringify(wrapInvoke({"command":"FSWriteFile", "path":path, "data": data, options:options})));
+                let {r, e} = $e_node.syncFSWriteFile({"path":path, options:options}, data);
+                if (e!=null) throw "writeFileSync failed: "+path;
             },
             writeFile(path, data, options, cb) {
                 if (cb==null) {
@@ -3148,27 +3175,22 @@ var __electrico_nonce=null;
                     options=null;
                 }
                 if (options!=null && typeof options != 'object') options = {encoding: options};
-                const req = createCMDRequest(true);
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            cb();
-                        }
+                $e_node.asyncFSWriteFile({"path":path, "data": data, options:options}, data).then((e, r)=>{
+                    if (e!==null) {
+                        throw "writeFile failed: "+path;
+                    } else {
+                        cb();
                     }
-                };
-                if (options==null || options.encoding==null) {
-                    data = btoa(data);
-                }
-                req.send(JSON.stringify(wrapInvoke({"command":"FSWriteFile", "path":path, "data": data, options:options})));
+                });
             },
             readFileSync(path, options) {
                 if (options!=null && typeof options != 'object') options = {encoding: options};
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSReadFile", "path":path, options:options})));
+                let {r, e} = $e_node.syncFSReadFile({"path":path, options:options});
+                if (e!=null) throw "readFileSync failed: "+path;
                 if (options==null || options.encoding==null) {
-                    return Buffer.from(req.response);
+                    return Buffer.from(r);
                 }
-                return req.responseText;
+                return r;
             },
             readFile(path, options, cb) {
                 if (cb==null) {
@@ -3176,27 +3198,23 @@ var __electrico_nonce=null;
                     options=null;
                 }
                 if (options!=null && typeof options != 'object') options = {encoding: options};
-                const req = createCMDRequest(true);
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            if (options==null || options.encoding==null) {
-                                cb(null, Buffer.from(req.response));
-                            } else {
-                                cb(null, req.responseText);
-                            }
+                $e_node.asyncFSReadFile({"path":path, options:options}).then((e, r)=>{
+                    if (e!==null) {
+                        cb(e);
+                    } else {
+                        if (options==null || options.encoding==null) {
+                            cb(null, Buffer.from(r));
                         } else {
-                            cb(req.responseText);
+                            cb(null, r);
                         }
                     }
-                };
-                req.send(JSON.stringify(wrapInvoke({"command":"FSReadFile", "path":path, options:options})));
+                });
             },
             readdirSync(path, options) {
                 if (options!=null && typeof options != 'object') options = {encoding: options};
-                const req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSReadDir", "path":path, options:options})));
-                let dirents = JSON.parse(req.responseText);
+                let {r, e} = $e_node.syncFSReadDir({"path":path, options:options});
+                if (e!=null) throw "readdirSync failed: "+path;
+                let dirents = JSON.parse(r);
                 if (options==null || !options.withFileTypes) {
                     let names = [];
                     for (let de of dirents) {
@@ -3217,28 +3235,20 @@ var __electrico_nonce=null;
                 if (mode==null) mode="0o666";
                 if (flags==null) flags="r";
                 _fd++;
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSOpen", fd:_fd, "path":path, "flags":flags.toLowerCase(), "mode":mode})));
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            cb(null, req.responseText*1);
-                        } else {
-                            cb(req.responseText);
-                        }
+                $e_node.asyncFSOpen({fd:_fd, "path":path, "flags":flags.toLowerCase(), "mode":mode}).then((e, r)=>{
+                    if (e!==null) {
+                        cb(e);
+                    } else {
+                        cb(null, r*1);
                     }
-                };
+                });
             },
             close(fd, cb) {
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSClose", "fd":fd})));
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status != 200 && cb!=null) {
-                            cb(req.responseText);
-                        }
+                $e_node.asyncFSClose({"fd":fd}).then((e, r)=>{
+                    if (e!==null) {
+                        cb(e);
                     }
-                };
+                });
             },
             read(fd, ...args) {
                 let buffer, offset=0, length, position, cb;
@@ -3263,20 +3273,16 @@ var __electrico_nonce=null;
                     }
                     length = buffer.byteLength-offset;
                 }
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSRead", "fd":fd, "offset":offset, "length":length, "position":position})));
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            let br = Buffer.from(req.response);
-                            let bytesRead = Math.min(br.byteLength, buffer.byteLength);
-                            br.copy(buffer, 0, 0, bytesRead);
-                            cb(null, bytesRead, buffer);
-                        } else {
-                            cb(req.responseText);
-                        }
+                $e_node.asyncFSRead({"fd":fd, "offset":offset, "length":length, "position":position}).then((e, r)=>{
+                    if (e!==null) {
+                        cb(e);
+                    } else {
+                        let br = Buffer.from(r);
+                        let bytesRead = Math.min(br.byteLength, buffer.byteLength);
+                        br.copy(buffer, 0, 0, bytesRead);
+                        cb(null, bytesRead, buffer);
                     }
-                };
+                });
             },
             write(fd, ...args) {
                 let buffer, offset=0, length, position, cb;
@@ -3305,27 +3311,32 @@ var __electrico_nonce=null;
                     offset=options.offset || offset; length=options.length || length; position=options.position || position;
                 }
                 length = buffer.byteLength-offset;
-                
-                let data = buffer.toString('base64');
-                const req = createCMDRequest(true);
-                req.send(JSON.stringify(wrapInvoke({"command":"FSWrite", "fd":fd, "data": data,"offset":offset, "length":length, "position":position})));
-                req.onreadystatechange = function() {
-                    if (this.readyState == 4) {
-                        if (req.status == 200) {
-                            let written = req.responseText*1;
-                            cb(null, written, args[0]);
-                        } else {
-                            cb(req.responseText);
-                        }
+                $e_node.asyncFSWrite({"fd":fd,"offset":offset, "length":length, "position":position}, buffer).then((e, r)=>{
+                    if (e!==null) {
+                        cb(e);
+                    } else {
+                        let written = r*1;
+                        cb(null, written, args[0]);
                     }
-                };
+                });
+            },
+            realpath: (path, options, cb) => {
+                if (cb==null) {
+                    cb = options;
+                    options=null;
+                }
+                let {r, e} = $e_node.syncFSRealPath({"path":path});
+                if (e!=null) throw "realpath failed: "+path;
+                cb(null, r);
+            },
+            fdatasync: (fd, cb) => {
+                $e_node.asyncFSFdatasync({"fd":fd});
             },
             watch(path, options, cb) {
-                const req = createCMDRequest(false);
                 let wid = uuidv4();
-                req.send(JSON.stringify(wrapInvoke({"command":"FSWatch", wid:wid, "path":path, options:options})));
-                if (req.responseText.startsWith("Error: ")) {
-                    throw "fs.watch error: "+req.responseText.substring(7);
+                let {r, e} = $e_node.syncFSWatch({wid:wid, "path":path, options:options});
+                if (e!=null) {
+                    throw "fs.watch error: "+e;
                 }
                 class WatcherCls extends EventEmitter {
                     constructor() {
@@ -3351,8 +3362,7 @@ var __electrico_nonce=null;
                             }
                         }
                         this.close = () => {
-                            const req = createCMDRequest(true);
-                            req.send(JSON.stringify(wrapInvoke({"command":"FSWatchClose", "wid":wid})));
+                            $e_node.asyncFSWatchClose({wid:wid});
                         }
                     }
                 }
@@ -3425,12 +3435,11 @@ var __electrico_nonce=null;
         },
         child_process: {
             spawn: function(cmd, args, options) {
-                let req = createCMDRequest(false);
-                req.send(JSON.stringify(wrapInvoke({"command":"ChildProcessSpawn", cmd:cmd, args:args})));
-                if (req.responseText.startsWith("Error: ")) {
-                    throw "child_process.spawn error: "+req.responseText.substring(7);
+                let {r, e} = $e_node.syncChildProcessSpawn({cmd:cmd, args:args});
+                if (e!=null) {
+                    throw "child_process.spawn error: "+e;
                 }
-                let pid = req.responseText;
+                let pid = r;
                 let proc = {
                     pid: pid,
                     on: {},
@@ -3438,10 +3447,9 @@ var __electrico_nonce=null;
                     stderr_on: {},
                     stdin: {
                         write: (data) => {
-                            let req = createCMDRequest(false);
-                            req.send(JSON.stringify(wrapInvoke({"command":"ChildProcessStdinWrite", pid: pid, data:data})));
-                            if (req.responseText!="OK") {
-                                throw "child_process.stdin.write error: "+req.responseText;
+                            let {r, e} = $e_node.syncChildProcessStdinWrite({pid: pid}, data);
+                            if (e!=null) {
+                                throw "child_process.stdin.write error: "+e;
                             }
                         }
                     },
@@ -3459,10 +3467,9 @@ var __electrico_nonce=null;
                         proc.on[event] = cb;
                     },
                     disconnect: () => {
-                        let req = createCMDRequest(false);
-                        req.send(JSON.stringify(wrapInvoke({"command":"ChildProcessDisconnect", pid: pid})));
-                        if (req.responseText!="OK") {
-                            throw "child_process.disconnect error: "+req.responseText;
+                        let {r, e} = $e_node.syncChildProcessDisconnect({pid: pid});
+                        if (e!=null) {
+                            throw "child_process.disconnect error: "+e;
                         }
                     }
                 };
@@ -3473,17 +3480,15 @@ var __electrico_nonce=null;
         os: {
             homedir: () => {
                 if (window.__electrico.homedir==null) {
-                    const req = createCMDRequest(false);
-                    req.send(JSON.stringify({"action":"Electron", invoke:{"command":"GetAppPath", "path":"userHome"}}));
-                    window.__electrico.homedir = req.responseText;
+                    let {r, e} = $e_electron.syncGetAppPath({ "path":"userHome"});
+                    window.__electrico.homedir = r;
                 }
                 return window.__electrico.homedir;
             },
             tmpdir: () => {
                 if (window.__electrico.tmpdir==null) {
-                    const req = createCMDRequest(false);
-                    req.send(JSON.stringify({"action":"Electron", invoke:{"command":"GetAppPath", "path":"temp"}}));
-                    window.__electrico.tmpdir = req.responseText;
+                    let {r, e} = $e_electron.syncGetAppPath({ "path":"temp"});
+                    window.__electrico.tmpdir = r;
                 }
                 return window.__electrico.tmpdir;
             }
@@ -3528,31 +3533,156 @@ var __electrico_nonce=null;
             }
         },
         net: {
-            // TODO
-            Server: {
-                
+            createServer: function(options, listener) {
+                if (listener==null) {
+                    listener=options;
+                    options=null;
+                }
+                class ServerCls extends EventEmitter {
+                    constructor() {
+                        super();
+                        this._connections={};
+                        this.listen = ((hook, cb) => {
+                            if (cb!=null) {
+                                this.on("listening", cb);
+                            }
+                            let {r, e} = $e_node.syncNETCreateServer({"hook":hook, "options":options});
+                            if (e==null) {
+                                window.__electrico.net_server[hook]=this;
+                                this.id=r;
+                                this.emit("listening");
+                            } else {
+                                this.emit("error", e);
+                            }
+                        }).bind(this);
+                        this.close = ((cb) => {
+                            for (let cid in this._connections) {
+                                let {r, e} = $e_node.syncNETCloseConnection({"id":cid});
+                                this._connections[cid].emit("close");
+                                delete window.__electrico.net_server[cid];
+                            }
+                            let {r, e} = $e_node.syncNETCloseServer({"id":this.id});
+                            this._connections={};
+                            for (let id in window.__electrico.net_server) {
+                                if (window.__electrico.net_server[id]==this) {
+                                    delete window.__electrico.net_server[id];
+                                }
+                            }
+                            this.emit("close");
+                            if (cb!=null) cb();
+                        }).bind(this);
+                        this._connection_start = (id => {
+                            class ConnectionCls extends EventEmitter {
+                                constructor(server) {
+                                    super();
+                                    server._connections[id] = this;
+                                    this.write = ((data, encoding, cb) => {
+                                        if (cb==null) {
+                                            cb=encoding;
+                                            encoding=null;
+                                        }
+                                        encoding = encoding || 'utf-8';
+                                        if (!Buffer.isBuffer(data)) {
+                                            data=Buffer.from(data, encoding);
+                                        }
+                                        $e_node.asyncNETWriteConnection({"id":id}, data).then((e, r)=>{
+                                            if (cb!=null) cb(e==null);
+                                        });
+                                    }).bind(this);
+                                    this.end = ((data, encoding, cb) => {
+                                        cb = cb || encoding;
+                                        let end = () => {
+                                            setTimeout(()=>{
+                                                let {r, e} = $e_node.syncNETCloseConnection({"id":id});
+                                            }, 100);
+                                        };
+                                        if (data!=null) {
+                                            this.write(data, encoding, ()=>{
+                                                end();
+                                            });
+                                        } else {
+                                            end();
+                                        }
+                                    }).bind(this);
+                                    this._connection_end = (id => {
+                                        this.emit("end");
+                                        delete server._connections[id];
+                                        delete window.__electrico.net_server[id];
+                                    }).bind(this);
+                                }
+                            }
+                            let connection = new ConnectionCls(this);
+                            window.__electrico.net_server[id] = connection;
+                            this.emit("connection", connection);
+                        }).bind(this);
+                    }
+                }
+                let server = new ServerCls();
+                if (listener!=null) {
+                    server.on("connection", listener);
+                }
+                return server;
             },
-            Socket: {
-            },
-            createServer: {
-
-            },
-            createConnection: {
-
+            createConnection: function (hook, listener) {
+                class ConnectionCls extends EventEmitter {
+                    constructor() {
+                        super();
+                        this.write = ((data, encoding, cb) => {
+                            if (cb==null) {
+                                cb=encoding;
+                                encoding=null;
+                            }
+                            encoding = encoding || 'utf-8';
+                            if (!Buffer.isBuffer(data)) {
+                                data=Buffer.from(data, encoding);
+                            }
+                            $e_node.asyncNETWriteConnection({"id":id}, data).then((e, r)=>{
+                                if (cb!=null) cb(e==null);
+                            });
+                        }).bind(this);
+                        this.end = ((data, encoding, cb) => {
+                            cb = cb || encoding;
+                            let end = () => {
+                                setTimeout(()=>{
+                                    let {r, e} = $e_node.syncNETCloseConnection({"id":id});
+                                }, 100);
+                            };
+                            if (data!=null) {
+                                this.write(data, encoding, ()=>{
+                                    end();
+                                });
+                            } else {
+                                end();
+                            }
+                        }).bind(this);
+                        this._connection_end = (id => {
+                            this.emit("end");
+                            delete window.__electrico.net_server[id];
+                        }).bind(this);
+                    }
+                }
+                let id = uuidv4();
+                let connection = new ConnectionCls();
+                if (listener!=null) {
+                    connection.on("connect", listener);
+                }
+                window.__electrico.net_server[id] = connection;
+                let {r, e} = $e_node.syncNETCreateConnection({"id":id, "hook":hook});
+                if (e!=null) {
+                    console.error("createConnection error: ", e);
+                    setTimeout(()=>{
+                        connection.emit("error", e);
+                    }, 0);
+                } else {
+                    setTimeout(()=>{
+                        connection.emit("connect");
+                    }, 0);
+                }
+                return connection;
             }
         },
         zlib :{
-            // TODO
             createDeflateRaw: {
-
-            },
-            ZlibOptions: {
-
-            },
-            InflateRaw: {
-
-            },
-            DeflateRaw: {
 
             },
             createInflateRaw: {
@@ -3830,10 +3960,14 @@ var __electrico_nonce=null;
             return new Proxy({}, {
                 get(target, prop, receiver) {
                     if (_processInfo==null) {
-                        const req = new _XMLHttpRequest();
-                        req.open("POST", window.__create_protocol_url("ipc://ipc/send"), false);
-                        req.send(JSON.stringify({"action":"GetProcessInfo", "nonce":nonce}));
-                        _processInfo = JSON.parse(req.responseText);
+                        if (nonce!=null) {
+                            const req = new _XMLHttpRequest();
+                            req.open("POST", window.__create_protocol_url("ipc://ipc/send"), false);
+                            req.send(JSON.stringify({"action":"GetProcessInfo", "nonce":nonce}));
+                            _processInfo = JSON.parse(req.responseText);
+                        } else {
+                            _processInfo = {};
+                        }
                     }
                     if (prop=="on") {
                         return (event, f) => {
@@ -3860,6 +3994,7 @@ var __electrico_nonce=null;
             });
         }
         window.process = processi(__electrico_nonce);
+       
         let _electron_i = {};
         
         let _electron = function(nonce) {
@@ -3951,14 +4086,15 @@ var __electrico_nonce=null;
             before: (nonce) => {
                 window.addEventListener = (e, h) => {
                     _addEventListener(e, (e)=>{
-                        process=processi(nonce);
-                        h(e);
+                        let process=processi(nonce);
+                        let he = "("+h.toString()+")(e)";
+                        eval(he);
                     })
                 };
             },
             after: () => {
                 window.addEventListener=_addEventListener;
-                delete window.process;
+                window.process=processi(null);
             }
         });
         //setTimeout(()=>{window.__electrico_preload(document);}, 1000);
@@ -4171,8 +4307,8 @@ var __electrico_nonce=null;
                 expanded_path="node_modules/"+mpath;
             }
             expanded_path = normalize(expanded_path);
-
-            let cached = fromCache(expanded_path);
+            let cache_path = expanded_path;
+            let cached = fromCache(cache_path);
             if (cached!=null && cached!="" && cache) {
                return cached;
             }
@@ -4185,7 +4321,6 @@ var __electrico_nonce=null;
             }
             if (cached=="" || req.status==301) {
                 //console.trace("js file not found", expanded_path);
-                window.__electrico.module_cache[expanded_path]="";
                 let package_path = window.__create_protocol_url("fil://mod/"+expanded_path+"/package.json");
                 const preq = new XMLHttpRequest();
                 preq.open("GET", package_path, false);
@@ -4200,12 +4335,7 @@ var __electrico_nonce=null;
                 
                 if (!expanded_path.endsWith("js")) expanded_path+=".js";
                 expanded_path = normalize(expanded_path);
-                if (cache) {
-                    let cached = fromCache(expanded_path);
-                    if (cached!=null) {
-                        return cached;
-                    }
-                }
+                
                 const req2 = new XMLHttpRequest();
                 let jsfilepath = window.__create_protocol_url("fil://mod/"+expanded_path);
                 req2.open("GET", jsfilepath, false);
@@ -4227,12 +4357,9 @@ var __electrico_nonce=null;
                 script = window.__replaceImports(script);
                 script = sourceURL+"{\nlet __require_this=_this;"+script+"\n}";
                 try {
-                    /*if (expanded_path.endsWith("platform/product/common/productService.js")) {
-                        console.log("found!");
-                    }*/
                     eval(script);
                 } catch (e) {
-                    console.log("require error", expanded_path, script, e);
+                    //console.log("require error", expanded_path, script, e);
                     throw e;
                 }
                 if (exports.__electrico_deferred!=null) {
@@ -4244,7 +4371,7 @@ var __electrico_nonce=null;
                 exported = module.exports || exports;
             }
             if (cache) {
-                window.__electrico.module_cache[expanded_path]=exported;
+                window.__electrico.module_cache[cache_path]=exported;
             }
             return exported;
         }
@@ -4363,7 +4490,7 @@ var __electrico_nonce=null;
 
 ```javascript
 (function() {
-    function init_shared (window, backend) {
+    function init_shared (window) {
         function getCircularReplacer() {
             const ancestors = [];
             return function (key, value) {
@@ -4397,14 +4524,6 @@ var __electrico_nonce=null;
           );
         };
         window.__init_require(window);
-        if (backend) {
-            function createCMDRequest(async) {
-                const req = new XMLHttpRequest();
-                req.open("POST", window.__create_protocol_url("cmd://cmd/execute"), async);
-                return req;
-            }
-            window.createCMDRequest=createCMDRequest;
-        }
     }
     window.__init_shared = init_shared;
 })();
