@@ -1,4 +1,4 @@
-use std::{fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path, time::SystemTime};
+use std::{collections::HashMap, env, ffi::OsStr, fs::{self, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path, time::SystemTime};
 use log::{debug, error, info, trace, warn};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use reqwest::{header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE}, Method, Request, StatusCode, Url};
@@ -6,8 +6,8 @@ use tao::event_loop::EventLoopProxy;
 use tokio::runtime::Runtime;
 use wry::{http::Response, webview_version, RequestAsyncResponder};
 
-use crate::{backend::Backend, common::{respond_404, respond_client_error, respond_ok, respond_status, CONTENT_TYPE_BIN, CONTENT_TYPE_JSON, CONTENT_TYPE_TEXT}, node::{common::send_command, ipc::{ipc_connection, ipc_server}, types::{FSDirent, Process, ProcessEnv, ProcessVersions}}, types::{BackendCommand, ElectricoEvents}};
-use super::{process::child_process_spawn, types::{ConsoleLogLevel, FSStat, NodeCommand}};
+use crate::{backend::Backend, common::{respond_404, respond_client_error, respond_ok, respond_status, CONTENT_TYPE_BIN, CONTENT_TYPE_JSON, CONTENT_TYPE_TEXT}, node::{common::send_command, ipc::{ipc_connection, ipc_server}, types::{FSDirent, Process, ProcessVersions}}, types::{BackendCommand, ElectricoEvents}};
+use super::{addons::addons::process_command, process::child_process_spawn, types::{ConsoleLogLevel, FSStat, NodeCommand}};
 
 pub struct AppEnv {
     pub start_args: Vec<String>,
@@ -16,11 +16,12 @@ pub struct AppEnv {
 }
 
 impl AppEnv {
-    pub fn new(resources_path:String) -> AppEnv {
+    pub fn new(resources_path:String, add_args:&mut Vec<String>) -> AppEnv {
         let mut args = Vec::new();
         for arg in std::env::args() {
             args.push(arg);
         }
+        args.append(add_args);
         AppEnv {
             start_args:args,
             app_name:None,
@@ -88,11 +89,28 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
                 node_env="development".to_string();
                 electron_is_dev="1".to_string();
             }
+            let mut exec_path = "".to_string();
+            if let Ok(p) = std::env::current_exe() {
+                exec_path = p.as_os_str().to_str().unwrap().to_string();
+            }
+            let mut env:HashMap<String, String> = HashMap::new();
+            /*for (k, v) in env::vars() {
+                env.insert(k, v);
+            }*/
+            env.insert("NODE_ENV".to_string(), node_env);
+            env.insert("ELECTRON_IS_DEV".to_string(), electron_is_dev);
+            env.insert("HOME".to_string(), env::var("HOME").unwrap());
+            env.insert("PATH".to_string(), env::var("PATH").unwrap());
+            env.insert("SHELL".to_string(), env::var("SHELL").unwrap());
 
             let process_info = Process::new(platform.to_string(), 
                 ProcessVersions::new(node, chrome, electron), 
-                ProcessEnv::new(node_env, electron_is_dev, home),
-                app_env.resources_path.clone());
+                env,
+                app_env.resources_path.clone(),
+                exec_path,
+                app_env.start_args.clone(),
+                std::process::id()
+            );
             match serde_json::to_string(&process_info) {
                 Ok(json) => {
                     respond_status(StatusCode::OK, CONTENT_TYPE_JSON.to_string(), json.into_bytes(), responder);
@@ -202,17 +220,18 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
             }
             let mut entries:Vec<FSDirent> = Vec::new();
             fn read_dir(path:String, entries:&mut Vec<FSDirent>, recursive:bool) -> Option<std::io::Error> {
-                match fs::read_dir(path) {
+                match fs::read_dir(&path) {
                     Ok(rd) => {
                         for e in rd {
                             if let Ok(e) = e {
-                                let path = e.path().as_os_str().to_str().unwrap().to_string();
+                                let dpath = e.path().as_os_str().to_str().unwrap().to_string();
+                                let name = e.path().file_name().unwrap_or(OsStr::new("")).to_str().unwrap_or("").to_string();
                                 if recursive && e.path().is_dir() {
-                                    if let Some(error) = read_dir(path.clone(), entries, recursive) {
+                                    if let Some(error) = read_dir(dpath, entries, recursive) {
                                         return Some(error);
                                     }
                                 }
-                                entries.push(FSDirent::new(path, e.path().is_dir()));
+                                entries.push(FSDirent::new(path.clone(), name, e.path().is_dir()));
                             }
                         }
                         return None;
@@ -355,6 +374,19 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
                 respond_404(responder);
             }
         },
+        NodeCommand::FSUnlink { path } => {
+            let p = Path::new(path.as_str());
+            if p.is_file() {
+                let _ = fs::remove_file(path);
+            } else if p.is_symlink() {
+                let _ = symlink::remove_symlink_file(path);
+            }
+            respond_ok(responder);
+        },
+        NodeCommand::FSRename { old_path, new_path } => {
+            let _ = fs::rename(old_path, new_path);
+            respond_ok(responder);
+        },
         NodeCommand::HTTPRequest { options } => {
             tokio_runtime.spawn(
                 async move {
@@ -485,12 +517,20 @@ pub fn process_node_command(tokio_runtime:&Runtime, app_env:&AppEnv,
                 respond_status(StatusCode::INTERNAL_SERVER_ERROR, CONTENT_TYPE_TEXT.to_string(), format!("NETWriteConnection error, no data").into_bytes(), responder);
             }
         },
+        NodeCommand::NETSetTimeout { id, timeout } => {
+            trace!("NETSetTimeout {}, {}", id, timeout);
+            backend.net_set_timeout(id, timeout);
+            respond_ok(responder);
+        }
         NodeCommand::GetDataBlob { id } => {
             if let Some(data) = backend.get_data_blob(id) {
                 respond_status(StatusCode::OK, CONTENT_TYPE_BIN.to_string(), data, responder);
             } else {
                 respond_404(responder);
             }
-        }
+        },
+        NodeCommand::Addon { data } => {
+            process_command(tokio_runtime, app_env, proxy, backend, data, responder, data_blob); 
+        },
     }
 }

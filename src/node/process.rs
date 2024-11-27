@@ -1,16 +1,17 @@
-use std::{process::{Command, Stdio}, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
+use std::{process::{Command, Stdio}, sync::mpsc::{self, Receiver, Sender}, time::Duration};
 
 use log::{debug, error, trace};
+use portable_pty::CommandBuilder;
 use reqwest::StatusCode;
 use tao::event_loop::EventLoopProxy;
 use tokio::runtime::Runtime;
 use wry::RequestAsyncResponder;
 use std::io::{Read, Write};
 
-use crate::{backend::Backend, common::{respond_client_error, respond_status, CONTENT_TYPE_TEXT}, node::common::send_command, types::{BackendCommand, ChildProcess, ElectricoEvents}};
+use crate::{backend::Backend, common::{respond_404, respond_client_error, respond_status, CONTENT_TYPE_TEXT}, node::common::send_command, types::{BackendCommand, ChildProcess, ElectricoEvents}};
 
 pub fn child_process_spawn(
-        cmd:String, 
+        cmd_in:Option<String>, 
         args:Option<Vec<String>>,
         backend:&mut Backend,
         tokio_runtime:&Runtime,
@@ -21,6 +22,17 @@ pub fn child_process_spawn(
     if let Some(args) = args {
         pargs = args;
     }
+    let cmd:String;
+    if let Some(cmd_in) = cmd_in {
+        cmd = cmd_in;
+    } else {
+        #[cfg(unix)] {
+            cmd = "sh".to_string();
+        }
+        #[cfg(not(unix))] {
+            cmd = "powershell".to_string();
+        }
+    }
     match Command::new(cmd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -28,7 +40,7 @@ pub fn child_process_spawn(
         .args(pargs).spawn() {
         Ok(mut child) => {
             let (sender, receiver): (Sender<ChildProcess>, Receiver<ChildProcess>) = mpsc::channel();
-            backend.child_process_start(child.id().to_string(), sender.clone());
+            backend.child_process_start(&child.id().to_string(), sender.clone());
             respond_status(StatusCode::OK, CONTENT_TYPE_TEXT.to_string(), child.id().to_string().into_bytes(), responder); 
             tokio_runtime.spawn(
                 async move {
@@ -74,8 +86,8 @@ pub fn child_process_spawn(
                     let (stderr_end_sender, stderr_end_receiver): (Sender<ChildProcess>, Receiver<ChildProcess>) = mpsc::channel();
                     tokio::spawn(async move {
                         trace!("starting stderr");
+                        let stderr_buf:&mut [u8] = &mut [0; 65536];
                         loop {
-                            let stderr_buf:&mut [u8] = &mut [0; 65536];
                             if let Ok(read) = stderr.read(stderr_buf) {
                                 trace!("stderr read {}", read);
                                 if let Ok(d) = stderr_end_receiver.try_recv() {
@@ -101,8 +113,8 @@ pub fn child_process_spawn(
                     let (stdout_end_sender, stdout_end_receiver): (Sender<ChildProcess>, Receiver<ChildProcess>) = mpsc::channel();
                     tokio::spawn(async move {
                         trace!("starting stdoud");
+                        let stdout_buf:&mut [u8] = &mut [0; 65536];
                         loop {
-                            let stdout_buf:&mut [u8] = &mut [0; 65536];
                             if let Ok(read) = stdout.read(stdout_buf) {
                                 trace!("stdout read {}", read);
                                 if let Ok(d) = stdout_end_receiver.try_recv() {

@@ -24,7 +24,11 @@
             if (lib!=null) {
                 return lib;
             }
-            var module = {}; var exports = {__electrico_deferred:[]};
+            var module = {exports:{__default:{}}}; var exports = {__electrico_deferred:[], __default:{}};
+            var __e_exports = function(d) {
+                if (d=="") return exports;
+                return exports.__default;
+            };
             let module_path = _this!=null?_this.__import_mpath:"";
             let expanded_path = module_path;
             if (mpath.startsWith(".")) {
@@ -78,7 +82,10 @@
             if (mpath.endsWith(".json")) {
                 exported = JSON.parse(script);
             } else {
-                let _this = {"__import_mpath":expanded_path.substring(0, expanded_path.lastIndexOf("/"))};
+                let __import_mpath = expanded_path.substring(0, expanded_path.lastIndexOf("/"));
+                let __dirname = window.__dirname+"/"+__import_mpath;
+                let __Import_meta = {url:window.__dirname+"/"+expanded_path};
+                let _this = {"__import_mpath":__import_mpath};
                 let sourceURL = "//# sourceURL="+expanded_path+"\n";
                 script = window.__replaceImports(script);
                 script = sourceURL+"{\nlet __require_this=_this;"+script+"\n}";
@@ -89,12 +96,18 @@
                     throw e;
                 }
                 if (exports.__electrico_deferred!=null) {
+                    if (mpath.endsWith("base/common/async.js")) {
+                        console.log("base/common/async.js");
+                    }
                     for (let def of exports.__electrico_deferred) {
                         def();
                     }
                     delete exports.__electrico_deferred;
                 }
-                exported = module.exports || exports;
+                exported = (module.exports!=null && ((typeof module.exports=="function") || ((Object.keys(module.exports).length>0 && module.exports.__default==null) || (Object.keys(module.exports).length>1 && module.exports.__default!=null))))?module.exports:exports;
+                for (let k in exported.__default) {
+                    exported[k] = exported.__default[k];
+                }
             }
             if (cache) {
                 window.__electrico.module_cache[cache_path]=exported;
@@ -104,6 +117,7 @@
         window.__Import=function(_this, selector, mpath, doExport, exports) {
             //console.log("__import", mpath, selector);
             let mod = loadModule(_this, mpath, true);
+            
             let toEval="";
             if (selector!=null) {
                 selector = selector.trim();
@@ -126,8 +140,8 @@
                         if (!vlnames && parts.length==1) {
                             if (mod==null) {
                                 console.warn("mod null:", mpath);
-                            } else if (Object.keys(mod).length==1) {
-                                vlname =  Object.keys(mod)[0];
+                            } else if (mod.__default !=null && Object.keys(mod.__default).length==1) {
+                                vlname =  Object.keys(mod.__default)[0];
                                 vlnames = true;
                             }
                         }
@@ -176,14 +190,15 @@
             script = script.replaceAll(/([;,\r,\n])export (.*) from [',"](.*)[',"][;,\r,\n]/g, ";$1var __electrico_import=__Import(__require_this, '$2', '$3', true, exports);eval(__electrico_import.toEval);");
             
             script = script.replaceAll(/\export +{ *([^{ ,;,\n,}}]*) *} *;/g, "exports['$1']=$1;");
-            let export_try_deferred = "var $3={}; try {exports['$3']=$3$4;} catch (e) {exports.__electrico_deferred.push(function(){exports['$3']=$3$4;});};";
+            let export_try_deferred = "var $3={}; try {exports['$3']=$3$4;} catch (e) {}; if (exports.__electrico_deferred!=null) exports.__electrico_deferred.push(function(){exports['$3']=$3$4;});";
 
             script = script.replaceAll(/\export +(var ) *(([^{ ,;,\n}]*))(.*);/g, export_try_deferred);
             script = script.replaceAll(/\export +(let ) *(([^{ ,;,\n}]*))(.*);/g, export_try_deferred);
             script = script.replaceAll(/\export +(const ) *(([^{ ,;,\n}]*))(.*);/g, export_try_deferred);
-            script = script.replaceAll(/\export +(default )?(const )?(var )?(let )? *(([^{ ,;,\n}]*))(.*);/g, "exports['$6']=$6$7;");
 
-            script = script.replaceAll(/\export +(default)?(const)? *((async +function)?(function)?(function\*)?(async +function\*)?(class)? +([^{ ,(,;,\n}]*))/g, "exports['$9']=$9=$3");
+            script = script.replaceAll(/\export +(default )?(const )?(var )?(let )? *(([^{ ,;,\n}]*))(.*);/g,"__e_exports('$1')['$6']=$6$7;");
+
+            script = script.replaceAll(/\export +(default)?(const)? *((async +function)?(function)?(function\*)?(async +function\*)?(class)? +([^{ ,(,;,\n}]*))/g, "__e_exports('$1')['$9']=$9=$3");
             script = script.replaceAll('"use strict"', "");
             script = script.replaceAll(/[\r,\n] *}[\r,\n] *\(function/g, "\n};\n(function"); // Color
 
@@ -194,7 +209,8 @@
                     let sourcemaps = JSON.parse(atob(script.substring(smix+sourcemapspattern.length)));
                     if (sourcemaps.sourceRoot!=null && sourcemaps.sourceRoot.startsWith("file://")) {
                         sourcemaps.sourceRoot = window.__create_protocol_url("fil://mod/"+sourcemaps.sourceRoot.substring(7));
-                        script = script.substring(0, smix+sourcemapspattern.length)+btoa(JSON.stringify(sourcemaps));
+                        //script = script.substring(0, smix+sourcemapspattern.length)+btoa(JSON.stringify(sourcemaps));
+                        script = script.substring(0, smix+sourcemapspattern.length);
                     }
                 } catch (e) {}
             }
