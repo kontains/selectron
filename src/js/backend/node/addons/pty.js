@@ -29,14 +29,14 @@
                     }
                 },
                 write: (data) => {
-                    let {r, e} = $e_node.syncChildProcessStdinWrite({pid: id}, data);
+                    let {r, e} = $e_node.syncApi_Childprocess_StdinWrite({pid: id}, data);
                     if (e!=null) {
                         throw "ptyProcess.write error: "+e;
                     }
                 },
                 resize: (cols, rows) => {
                     // TODO
-                    console.log("ptyProcess.resize", cols, rows);
+                    console.error("ptyProcess.resize", cols, rows);
                 },
                 onExit: (cb) => {
                     pcp.on.close = (exit_code)=> {
