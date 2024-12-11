@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::HashMap, usize};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ConsoleLogLevel {
@@ -31,6 +31,8 @@ pub enum NodeCommand {
   GetProcessInfo,
   GetStartArgs,
   GetDataBlob {id: String},
+  ExecuteSync {script: String},
+  ExecuteSyncResponse {uuid: String, data:Option<String>, error:Option<String>},
   Addon {data: String},
   Api {data: String}
 }
